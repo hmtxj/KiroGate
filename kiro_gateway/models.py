@@ -20,8 +20,7 @@
 """
 OpenAI 兼容 API 的 Pydantic 模型。
 
-Определяет схемы данных для запросов и ответов,
-обеспечивая валидацию и сериализацию.
+定义请求和响应的数据模式，提供验证和序列化功能。
 """
 
 import time
@@ -31,14 +30,14 @@ from pydantic import BaseModel, Field
 
 
 # ==================================================================================================
-# Модели для /v1/models endpoint
+# /v1/models 端点模型
 # ==================================================================================================
 
 class OpenAIModel(BaseModel):
     """
-    Модель данных для описания AI модели в формате OpenAI.
-    
-    Используется в ответе эндпоинта /v1/models.
+    OpenAI 格式的 AI 模型描述。
+
+    用于 /v1/models 端点的响应。
     """
     id: str
     object: str = "model"
@@ -49,31 +48,30 @@ class OpenAIModel(BaseModel):
 
 class ModelList(BaseModel):
     """
-    Список моделей в формате OpenAI.
-    
-    Ответ эндпоинта GET /v1/models.
+    OpenAI 格式的模型列表。
+
+    GET /v1/models 端点的响应。
     """
     object: str = "list"
     data: List[OpenAIModel]
 
 
 # ==================================================================================================
-# Модели для /v1/chat/completions endpoint
+# /v1/chat/completions 端点模型
 # ==================================================================================================
 
 class ChatMessage(BaseModel):
     """
-    Сообщение в чате в формате OpenAI.
-    
-    Поддерживает различные роли (user, assistant, system, tool)
-    и различные форматы контента (строка, список, объект).
-    
+    OpenAI 格式的聊天消息。
+
+    支持多种角色（user、assistant、system、tool）和多种内容格式（字符串、列表、对象）。
+
     Attributes:
-        role: Роль отправителя (user, assistant, system, tool)
-        content: Содержимое сообщения (может быть строкой, списком или None)
-        name: Опциональное имя отправителя
-        tool_calls: Список вызовов инструментов (для assistant)
-        tool_call_id: ID вызова инструмента (для tool)
+        role: 发送者角色（user、assistant、system、tool）
+        content: 消息内容（可以是字符串、列表或 None）
+        name: 可选的发送者名称
+        tool_calls: 工具调用列表（用于 assistant）
+        tool_call_id: 工具调用 ID（用于 tool）
     """
     role: str
     content: Optional[Union[str, List[Any], Any]] = None
@@ -86,12 +84,12 @@ class ChatMessage(BaseModel):
 
 class ToolFunction(BaseModel):
     """
-    Описание функции инструмента.
-    
+    工具函数描述。
+
     Attributes:
-        name: Имя функции
-        description: Описание функции
-        parameters: JSON Schema параметров функции
+        name: 函数名称
+        description: 函数描述
+        parameters: 函数参数的 JSON Schema
     """
     name: str
     description: Optional[str] = None
@@ -100,11 +98,11 @@ class ToolFunction(BaseModel):
 
 class Tool(BaseModel):
     """
-    Инструмент (tool) в формате OpenAI.
-    
+    OpenAI 格式的工具。
+
     Attributes:
-        type: Тип инструмента (обычно "function")
-        function: Описание функции
+        type: 工具类型（通常为 "function"）
+        function: 函数描述
     """
     type: str = "function"
     function: ToolFunction
@@ -112,34 +110,34 @@ class Tool(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """
-    Запрос на генерацию ответа в формате OpenAI Chat Completions API.
-    
-    Поддерживает все стандартные поля OpenAI API, включая:
-    - Базовые параметры (model, messages, stream)
-    - Параметры генерации (temperature, top_p, max_tokens)
-    - Tools (function calling)
-    - Дополнительные параметры (игнорируются, но принимаются для совместимости)
-    
+    OpenAI Chat Completions API 格式的请求。
+
+    支持所有标准 OpenAI API 字段，包括：
+    - 基本参数（model、messages、stream）
+    - 生成参数（temperature、top_p、max_tokens）
+    - 工具调用（function calling）
+    - 兼容性参数（接受但忽略）
+
     Attributes:
-        model: ID модели для генерации
-        messages: Список сообщений чата
-        stream: Использовать streaming (по умолчанию False)
-        temperature: Температура генерации (0-2)
-        top_p: Top-p sampling
-        n: Количество вариантов ответа
-        max_tokens: Максимальное количество токенов в ответе
-        max_completion_tokens: Альтернативное поле для max_tokens
-        stop: Стоп-последовательности
-        presence_penalty: Штраф за повторение тем
-        frequency_penalty: Штраф за повторение слов
-        tools: Список доступных инструментов
-        tool_choice: Стратегия выбора инструмента
+        model: 生成模型 ID
+        messages: 聊天消息列表
+        stream: 是否使用流式响应（默认 False）
+        temperature: 生成温度（0-2）
+        top_p: Top-p 采样
+        n: 响应变体数量
+        max_tokens: 响应最大 token 数
+        max_completion_tokens: max_tokens 的替代字段
+        stop: 停止序列
+        presence_penalty: 主题重复惩罚
+        frequency_penalty: 词汇重复惩罚
+        tools: 可用工具列表
+        tool_choice: 工具选择策略
     """
     model: str
     messages: Annotated[List[ChatMessage], Field(min_length=1)]
     stream: bool = False
-    
-    # Параметры генерации
+
+    # 生成参数
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     n: Optional[int] = 1
@@ -148,12 +146,12 @@ class ChatCompletionRequest(BaseModel):
     stop: Optional[Union[str, List[str]]] = None
     presence_penalty: Optional[float] = None
     frequency_penalty: Optional[float] = None
-    
-    # Tools (function calling)
+
+    # 工具调用
     tools: Optional[List[Tool]] = None
     tool_choice: Optional[Union[str, Dict]] = None
-    
-    # Поля для совместимости (игнорируются)
+
+    # 兼容性字段（忽略）
     stream_options: Optional[Dict[str, Any]] = None
     logit_bias: Optional[Dict[str, float]] = None
     logprobs: Optional[bool] = None
@@ -161,22 +159,22 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     seed: Optional[int] = None
     parallel_tool_calls: Optional[bool] = None
-    
+
     model_config = {"extra": "allow"}
 
 
 # ==================================================================================================
-# Модели для ответов
+# 响应模型
 # ==================================================================================================
 
 class ChatCompletionChoice(BaseModel):
     """
-    Один вариант ответа в Chat Completion.
-    
+    Chat Completion 的单个响应选项。
+
     Attributes:
-        index: Индекс варианта
-        message: Сообщение ответа
-        finish_reason: Причина завершения (stop, tool_calls, length)
+        index: 选项索引
+        message: 响应消息
+        finish_reason: 完成原因（stop、tool_calls、length）
     """
     index: int = 0
     message: Dict[str, Any]
@@ -185,13 +183,13 @@ class ChatCompletionChoice(BaseModel):
 
 class ChatCompletionUsage(BaseModel):
     """
-    Информация об использовании токенов.
-    
+    Token 使用信息。
+
     Attributes:
-        prompt_tokens: Количество токенов в запросе
-        completion_tokens: Количество токенов в ответе
-        total_tokens: Общее количество токенов
-        credits_used: Использованные кредиты (специфично для Kiro)
+        prompt_tokens: 请求 token 数
+        completion_tokens: 响应 token 数
+        total_tokens: 总 token 数
+        credits_used: 使用的积分（Kiro 特有）
     """
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -201,15 +199,15 @@ class ChatCompletionUsage(BaseModel):
 
 class ChatCompletionResponse(BaseModel):
     """
-    Полный ответ Chat Completion (non-streaming).
-    
+    Chat Completion 完整响应（非流式）。
+
     Attributes:
-        id: Уникальный ID ответа
-        object: Тип объекта ("chat.completion")
-        created: Timestamp создания
-        model: Использованная модель
-        choices: Список вариантов ответа
-        usage: Информация об использовании токенов
+        id: 响应唯一 ID
+        object: 对象类型（"chat.completion"）
+        created: 创建时间戳
+        model: 使用的模型
+        choices: 响应选项列表
+        usage: Token 使用信息
     """
     id: str
     object: str = "chat.completion"
@@ -221,12 +219,12 @@ class ChatCompletionResponse(BaseModel):
 
 class ChatCompletionChunkDelta(BaseModel):
     """
-    Дельта изменений в streaming chunk.
-    
+    流式 chunk 的增量变化。
+
     Attributes:
-        role: Роль (только в первом chunk)
-        content: Новый контент
-        tool_calls: Новые tool calls
+        role: 角色（仅在第一个 chunk 中）
+        content: 新内容
+        tool_calls: 新的工具调用
     """
     role: Optional[str] = None
     content: Optional[str] = None
@@ -235,12 +233,12 @@ class ChatCompletionChunkDelta(BaseModel):
 
 class ChatCompletionChunkChoice(BaseModel):
     """
-    Один вариант в streaming chunk.
-    
+    流式 chunk 中的单个选项。
+
     Attributes:
-        index: Индекс варианта
-        delta: Дельта изменений
-        finish_reason: Причина завершения (только в последнем chunk)
+        index: 选项索引
+        delta: 增量变化
+        finish_reason: 完成原因（仅在最后一个 chunk 中）
     """
     index: int = 0
     delta: ChatCompletionChunkDelta
@@ -249,15 +247,15 @@ class ChatCompletionChunkChoice(BaseModel):
 
 class ChatCompletionChunk(BaseModel):
     """
-    Streaming chunk в формате OpenAI.
+    OpenAI 格式的流式 chunk。
 
     Attributes:
-        id: Уникальный ID ответа
-        object: Тип объекта ("chat.completion.chunk")
-        created: Timestamp создания
-        model: Использованная модель
-        choices: Список вариантов
-        usage: Информация об использовании (только в последнем chunk)
+        id: 响应唯一 ID
+        object: 对象类型（"chat.completion.chunk"）
+        created: 创建时间戳
+        model: 使用的模型
+        choices: 选项列表
+        usage: 使用信息（仅在最后一个 chunk 中）
     """
     id: str
     object: str = "chat.completion.chunk"
@@ -268,26 +266,26 @@ class ChatCompletionChunk(BaseModel):
 
 
 # ==================================================================================================
-# Модели для Anthropic Messages API (/v1/messages)
+# Anthropic Messages API 模型 (/v1/messages)
 # ==================================================================================================
 
 class AnthropicContentBlock(BaseModel):
     """
-    Content block для Anthropic Messages API.
+    Anthropic Messages API 的内容块。
 
-    Поддерживает различные типы контента: text, image, tool_use, tool_result, thinking.
+    支持多种内容类型：text、image、tool_use、tool_result、thinking。
 
     Attributes:
-        type: Тип контента
-        text: Текстовое содержимое (для type="text")
-        source: Источник изображения (для type="image")
-        id: ID tool_use (для type="tool_use")
-        name: Имя инструмента (для type="tool_use")
-        input: Входные данные инструмента (для type="tool_use")
-        tool_use_id: ID связанного tool_use (для type="tool_result")
-        content: Результат инструмента (для type="tool_result")
-        is_error: Флаг ошибки (для type="tool_result")
-        thinking: Содержимое thinking (для type="thinking")
+        type: 内容类型
+        text: 文本内容（type="text" 时）
+        source: 图片来源（type="image" 时）
+        id: tool_use ID（type="tool_use" 时）
+        name: 工具名称（type="tool_use" 时）
+        input: 工具输入数据（type="tool_use" 时）
+        tool_use_id: 关联的 tool_use ID（type="tool_result" 时）
+        content: 工具结果（type="tool_result" 时）
+        is_error: 错误标志（type="tool_result" 时）
+        thinking: thinking 内容（type="thinking" 时）
     """
     type: str  # "text", "image", "tool_use", "tool_result", "thinking"
     text: Optional[str] = None
@@ -309,11 +307,11 @@ class AnthropicContentBlock(BaseModel):
 
 class AnthropicMessage(BaseModel):
     """
-    Сообщение в формате Anthropic.
+    Anthropic 格式的消息。
 
     Attributes:
-        role: Роль (user или assistant)
-        content: Содержимое (строка или список content blocks)
+        role: 角色（user 或 assistant）
+        content: 内容（字符串或内容块列表）
     """
     role: str  # "user" or "assistant"
     content: Union[str, List[AnthropicContentBlock], List[Dict[str, Any]]]
@@ -323,12 +321,12 @@ class AnthropicMessage(BaseModel):
 
 class AnthropicTool(BaseModel):
     """
-    Инструмент в формате Anthropic.
+    Anthropic 格式的工具。
 
     Attributes:
-        name: Имя инструмента
-        description: Описание инструмента
-        input_schema: JSON Schema входных параметров
+        name: 工具名称
+        description: 工具描述
+        input_schema: 输入参数的 JSON Schema
     """
     name: str
     description: Optional[str] = None
@@ -339,22 +337,22 @@ class AnthropicTool(BaseModel):
 
 class AnthropicMessagesRequest(BaseModel):
     """
-    Запрос к Anthropic Messages API.
+    Anthropic Messages API 请求。
 
     Attributes:
-        model: ID модели
-        messages: Список сообщений
-        max_tokens: Максимальное количество токенов (обязательно)
-        system: Системный промпт
-        tools: Список инструментов
-        tool_choice: Стратегия выбора инструмента
-        temperature: Температура генерации
-        top_p: Top-p sampling
-        top_k: Top-k sampling
-        stop_sequences: Стоп-последовательности
-        stream: Использовать streaming
-        metadata: Метаданные запроса
-        thinking: Настройки extended thinking
+        model: 模型 ID
+        messages: 消息列表
+        max_tokens: 最大 token 数（必填）
+        system: 系统提示词
+        tools: 工具列表
+        tool_choice: 工具选择策略
+        temperature: 生成温度
+        top_p: Top-p 采样
+        top_k: Top-k 采样
+        stop_sequences: 停止序列
+        stream: 是否使用流式响应
+        metadata: 请求元数据
+        thinking: Extended thinking 设置
     """
     model: str
     messages: Annotated[List[AnthropicMessage], Field(min_length=1)]
@@ -376,11 +374,11 @@ class AnthropicMessagesRequest(BaseModel):
 
 class AnthropicUsage(BaseModel):
     """
-    Информация об использовании токенов в формате Anthropic.
+    Anthropic 格式的 token 使用信息。
 
     Attributes:
-        input_tokens: Количество входных токенов
-        output_tokens: Количество выходных токенов
+        input_tokens: 输入 token 数
+        output_tokens: 输出 token 数
     """
     input_tokens: int = 0
     output_tokens: int = 0
@@ -388,15 +386,15 @@ class AnthropicUsage(BaseModel):
 
 class AnthropicResponseContentBlock(BaseModel):
     """
-    Content block в ответе Anthropic.
+    Anthropic 响应中的内容块。
 
     Attributes:
-        type: Тип контента (text, tool_use, thinking)
-        text: Текстовое содержимое
-        id: ID tool_use
-        name: Имя инструмента
-        input: Входные данные инструмента
-        thinking: Содержимое thinking
+        type: 内容类型（text、tool_use、thinking）
+        text: 文本内容
+        id: tool_use ID
+        name: 工具名称
+        input: 工具输入数据
+        thinking: thinking 内容
     """
     type: str  # "text", "tool_use", "thinking"
     text: Optional[str] = None
@@ -408,17 +406,17 @@ class AnthropicResponseContentBlock(BaseModel):
 
 class AnthropicMessagesResponse(BaseModel):
     """
-    Ответ Anthropic Messages API.
+    Anthropic Messages API 响应。
 
     Attributes:
-        id: Уникальный ID ответа
-        type: Тип объекта (всегда "message")
-        role: Роль (всегда "assistant")
-        content: Список content blocks
-        model: Использованная модель
-        stop_reason: Причина остановки
-        stop_sequence: Сработавшая стоп-последовательность
-        usage: Информация об использовании токенов
+        id: 响应唯一 ID
+        type: 对象类型（始终为 "message"）
+        role: 角色（始终为 "assistant"）
+        content: 内容块列表
+        model: 使用的模型
+        stop_reason: 停止原因
+        stop_sequence: 触发的停止序列
+        usage: Token 使用信息
     """
     id: str
     type: str = "message"

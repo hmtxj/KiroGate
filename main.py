@@ -30,36 +30,35 @@ KiroGate - OpenAI & Anthropic 兼容的 Kiro API 网关。
 
 import logging
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from loguru import logger
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from kiro_gateway.config import (
     APP_TITLE,
     APP_DESCRIPTION,
     APP_VERSION,
-    REFRESH_TOKEN,
-    PROFILE_ARN,
-    REGION,
-    KIRO_CREDS_FILE,
-    PROXY_API_KEY,
-    LOG_LEVEL,
-    _warn_deprecated_debug_setting,
+    settings,
 )
 from kiro_gateway.auth import KiroAuthManager
 from kiro_gateway.cache import ModelInfoCache
-from kiro_gateway.routes import router
+from kiro_gateway.routes import router, limiter, rate_limit_handler
 from kiro_gateway.exceptions import validation_exception_handler
+from kiro_gateway.middleware import RequestTrackingMiddleware, metrics_middleware
+from kiro_gateway.http_client import close_global_http_client
 
 
-# --- Loguru Configuration ---
+# --- Loguru 配置 ---
 logger.remove()
 logger.add(
     sys.stderr,
-    level=LOG_LEVEL,
+    level=settings.log_level,
     colorize=True,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
@@ -67,74 +66,73 @@ logger.add(
 
 class InterceptHandler(logging.Handler):
     """
-    Перехватывает логи из стандартного logging и перенаправляет в loguru.
-    
-    Это позволяет захватывать логи uvicorn, FastAPI и других библиотек,
-    которые используют стандартный logging вместо loguru.
+    拦截标准 logging 并重定向到 loguru。
+
+    这允许捕获来自 uvicorn、FastAPI 和其他使用标准 logging 而非 loguru 的库的日志。
     """
-    
+
     def emit(self, record: logging.LogRecord) -> None:
-        # Получаем соответствующий уровень loguru
+        # 获取对应的 loguru 级别
         try:
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        
-        # Находим вызывающий фрейм для корректного отображения источника
+
+        # 查找调用帧以正确显示源
         frame, depth = logging.currentframe(), 2
         while frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1
-        
+
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def setup_logging_intercept():
     """
-    Настраивает перехват логов из стандартного logging в loguru.
-    
-    Перехватывает логи от:
+    配置从标准 logging 到 loguru 的拦截。
+
+    拦截来自的日志：
     - uvicorn (access logs, error logs)
     - uvicorn.error
     - uvicorn.access
     - fastapi
     """
-    # Список логгеров для перехвата
+    # 要拦截的日志器列表
     loggers_to_intercept = [
         "uvicorn",
         "uvicorn.error",
         "uvicorn.access",
         "fastapi",
     ]
-    
+
     for logger_name in loggers_to_intercept:
         logging_logger = logging.getLogger(logger_name)
         logging_logger.handlers = [InterceptHandler()]
         logging_logger.propagate = False
 
 
-# Настраиваем перехват логов uvicorn/fastapi
+# 配置 uvicorn/fastapi 日志拦截
 setup_logging_intercept()
 
 
-# --- Configuration Validation ---
+# --- 配置验证 ---
 def validate_configuration() -> None:
     """
-    Validates that required configuration is present.
-    
-    Checks:
-    - .env file exists
-    - Either REFRESH_TOKEN or KIRO_CREDS_FILE is configured
-    
+    验证所需配置是否存在。
+
+    检查：
+    - .env 文件是否存在
+    - 是否配置了 REFRESH_TOKEN 或 KIRO_CREDS_FILE
+
     Raises:
-        SystemExit: If critical configuration is missing
+        SystemExit: 如果缺少关键配置
     """
     errors = []
-    
-    # Check if .env file exists
+
+    # 检查 .env 文件是否存在
     env_file = Path(".env")
     env_example = Path(".env.example")
-    
+
     if not env_file.exists():
         errors.append(
             ".env file not found!\n"
@@ -152,17 +150,17 @@ def validate_configuration() -> None:
             "See README.md for detailed instructions."
         )
     else:
-        # .env exists, check for credentials
-        has_refresh_token = bool(REFRESH_TOKEN)
-        has_creds_file = bool(KIRO_CREDS_FILE)
-        
-        # Check if creds file actually exists
-        if KIRO_CREDS_FILE:
-            creds_path = Path(KIRO_CREDS_FILE).expanduser()
+        # .env 存在，检查凭证
+        has_refresh_token = bool(settings.refresh_token)
+        has_creds_file = bool(settings.kiro_creds_file)
+
+        # 检查凭证文件是否实际存在
+        if settings.kiro_creds_file:
+            creds_path = Path(settings.kiro_creds_file).expanduser()
             if not creds_path.exists():
                 has_creds_file = False
-                logger.warning(f"KIRO_CREDS_FILE not found: {KIRO_CREDS_FILE}")
-        
+                logger.warning(f"KIRO_CREDS_FILE not found: {settings.kiro_creds_file}")
+
         if not has_refresh_token and not has_creds_file:
             errors.append(
                 "No Kiro credentials configured!\n"
@@ -180,8 +178,8 @@ def validate_configuration() -> None:
                 "\n"
                 "   See README.md for how to obtain credentials."
             )
-    
-    # Print errors and exit if any
+
+    # 打印错误并退出（如果有）
     if errors:
         logger.error("")
         logger.error("=" * 60)
@@ -193,50 +191,69 @@ def validate_configuration() -> None:
         logger.error("=" * 60)
         logger.error("")
         sys.exit(1)
-    
-    # Log successful configuration
-    if KIRO_CREDS_FILE:
-        logger.info(f"Using credentials file: {KIRO_CREDS_FILE}")
-    elif REFRESH_TOKEN:
+
+    # 记录成功的配置
+    if settings.kiro_creds_file:
+        logger.info(f"Using credentials file: {settings.kiro_creds_file}")
+    elif settings.refresh_token:
         logger.info("Using refresh token from environment")
 
 
-# Run configuration validation on import
+# 运行配置验证
 validate_configuration()
 
-# Warn about deprecated DEBUG_LAST_REQUEST if used
-_warn_deprecated_debug_setting()
 
-
-# --- Lifespan Manager ---
+# --- 生命周期管理器 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Управляет жизненным циклом приложения.
-    
-    Создаёт и инициализирует:
-    - KiroAuthManager для управления токенами
-    - ModelInfoCache для кэширования моделей
+    管理应用程序生命周期。
+
+    创建并初始化：
+    - KiroAuthManager 用于 token 管理
+    - ModelInfoCache 用于模型缓存
+    - 启动后台任务
     """
     logger.info("Starting application... Creating state managers.")
-    
-    # Создаём AuthManager
-    app.state.auth_manager = KiroAuthManager(
-        refresh_token=REFRESH_TOKEN,
-        profile_arn=PROFILE_ARN,
-        region=REGION,
-        creds_file=KIRO_CREDS_FILE if KIRO_CREDS_FILE else None
+
+    # 创建 AuthManager
+    auth_manager = KiroAuthManager(
+        refresh_token=settings.refresh_token,
+        profile_arn=settings.profile_arn,
+        region=settings.region,
+        creds_file=settings.kiro_creds_file if settings.kiro_creds_file else None
     )
-    
-    # Создаём кэш моделей
-    app.state.model_cache = ModelInfoCache()
-    
+    app.state.auth_manager = auth_manager
+
+    # 创建模型缓存
+    model_cache = ModelInfoCache()
+    model_cache.set_auth_manager(auth_manager)
+    app.state.model_cache = model_cache
+
+    # 启动后台刷新任务
+    await model_cache.start_background_refresh()
+
+    # 初始填充缓存
+    if model_cache.is_empty():
+        logger.info("Performing initial model cache population...")
+        await model_cache.refresh()
+
+    logger.info("Application startup complete.")
+
     yield
-    
-    logger.info("Shutting down application.")
+
+    logger.info("Shutting down application...")
+
+    # 停止后台任务
+    await model_cache.stop_background_refresh()
+
+    # 关闭全局 HTTP 客户端
+    await close_global_http_client()
+
+    logger.info("Application shutdown complete.")
 
 
-# --- FastAPI приложение ---
+# --- FastAPI 应用 ---
 app = FastAPI(
     title=APP_TITLE,
     description=APP_DESCRIPTION,
@@ -244,18 +261,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# 添加中间件（顺序很重要）
+app.add_middleware(RequestTrackingMiddleware)
+app.add_middleware(metrics_middleware)
 
-# --- Регистрация обработчика ошибок валидации ---
+# 设置速率限制器
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
+# 注册验证错误处理器
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
-
-# --- Подключение роутов ---
+# 包含路由
 app.include_router(router)
 
 
-# --- Uvicorn log config ---
-# Минимальная конфигурация для перенаправления логов uvicorn в loguru.
-# Использует InterceptHandler, который перехватывает логи и передаёт их в loguru.
+# --- Uvicorn 日志配置 ---
+# 最小配置，将 uvicorn 日志重定向到 loguru。
+# 使用 InterceptHandler 拦截日志并传递给 loguru。
 UVICORN_LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -272,11 +296,11 @@ UVICORN_LOG_CONFIG = {
 }
 
 
-# --- Точка входа ---
+# --- 入口点 ---
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Uvicorn server...")
-    
+
     uvicorn.run(
         app,
         host="0.0.0.0",

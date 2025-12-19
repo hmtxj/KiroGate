@@ -1,0 +1,480 @@
+# -*- coding: utf-8 -*-
+
+# KiroGate
+# Based on kiro-openai-gateway by Jwadow (https://github.com/Jwadow/kiro-openai-gateway)
+# Original Copyright (C) 2025 Jwadow
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+"""
+请求处理公共函数。
+
+提取 /v1/chat/completions 和 /v1/messages 端点的公共逻辑，
+减少代码重复，提高可维护性。
+"""
+
+import json
+from typing import Any, Callable, Dict, List, Optional, Union
+
+from fastapi import HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from loguru import logger
+
+from kiro_gateway.auth import KiroAuthManager
+from kiro_gateway.cache import ModelInfoCache
+from kiro_gateway.converters import build_kiro_payload, convert_anthropic_to_openai_request
+from kiro_gateway.http_client import KiroHttpClient
+from kiro_gateway.models import (
+    ChatCompletionRequest,
+    AnthropicMessagesRequest,
+)
+from kiro_gateway.streaming import (
+    stream_kiro_to_openai,
+    collect_stream_response,
+    stream_kiro_to_anthropic,
+    collect_anthropic_response,
+)
+from kiro_gateway.utils import generate_conversation_id, get_kiro_headers
+from kiro_gateway.config import settings
+
+
+# 导入 debug_logger
+try:
+    from kiro_gateway.debug_logger import debug_logger
+except ImportError:
+    debug_logger = None
+
+
+class RequestHandler:
+    """
+    请求处理器基类，封装公共逻辑。
+    """
+
+    @staticmethod
+    def prepare_request_logging(request_data: Union[ChatCompletionRequest, AnthropicMessagesRequest]) -> None:
+        """
+        准备请求日志记录。
+
+        Args:
+            request_data: 请求数据
+        """
+        if debug_logger:
+            debug_logger.prepare_new_request()
+
+        try:
+            request_body = json.dumps(request_data.model_dump(), ensure_ascii=False, indent=2).encode('utf-8')
+            if debug_logger:
+                debug_logger.log_request_body(request_body)
+        except Exception as e:
+            logger.warning(f"Failed to log request body: {e}")
+
+    @staticmethod
+    def log_kiro_request(kiro_payload: dict) -> None:
+        """
+        记录 Kiro 请求。
+
+        Args:
+            kiro_payload: Kiro 请求 payload
+        """
+        try:
+            kiro_request_body = json.dumps(kiro_payload, ensure_ascii=False, indent=2).encode('utf-8')
+            if debug_logger:
+                debug_logger.log_kiro_request_body(kiro_request_body)
+        except Exception as e:
+            logger.warning(f"Failed to log Kiro request: {e}")
+
+    @staticmethod
+    async def handle_api_error(
+        response,
+        http_client: KiroHttpClient,
+        endpoint_name: str,
+        error_format: str = "openai"
+    ) -> JSONResponse:
+        """
+        处理 API 错误。
+
+        Args:
+            response: HTTP 响应
+            http_client: HTTP 客户端
+            endpoint_name: 端点名称（用于日志）
+            error_format: 错误格式（"openai" 或 "anthropic"）
+
+        Returns:
+            JSONResponse 错误响应
+        """
+        try:
+            error_content = await response.aread()
+        except Exception:
+            error_content = b"Unknown error"
+
+        await http_client.close()
+        error_text = error_content.decode('utf-8', errors='replace')
+        logger.error(f"Error from Kiro API: {response.status_code} - {error_text}")
+
+        # 尝试解析 JSON 错误响应
+        error_message = error_text
+        try:
+            error_json = json.loads(error_text)
+            if "message" in error_json:
+                error_message = error_json["message"]
+                if "reason" in error_json:
+                    error_message = f"{error_message} (reason: {error_json['reason']})"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+        logger.warning(f"HTTP {response.status_code} - POST {endpoint_name} - {error_message[:100]}")
+
+        if debug_logger:
+            debug_logger.flush_on_error(response.status_code, error_message)
+
+        # 根据格式返回错误
+        if error_format == "anthropic":
+            return JSONResponse(
+                status_code=response.status_code,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": error_message
+                    }
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={
+                    "error": {
+                        "message": error_message,
+                        "type": "kiro_api_error",
+                        "code": response.status_code
+                    }
+                }
+            )
+
+    @staticmethod
+    def log_success(endpoint_name: str, is_streaming: bool = False) -> None:
+        """
+        记录成功日志。
+
+        Args:
+            endpoint_name: 端点名称
+            is_streaming: 是否为流式响应
+        """
+        mode = "streaming" if is_streaming else "non-streaming"
+        logger.info(f"HTTP 200 - POST {endpoint_name} ({mode}) - completed")
+
+    @staticmethod
+    def log_error(endpoint_name: str, error: Union[str, Exception], status_code: int = 500) -> None:
+        """
+        记录错误日志。
+
+        Args:
+            endpoint_name: 端点名称
+            error: 错误信息
+            status_code: HTTP 状态码
+        """
+        if isinstance(error, Exception):
+            error_msg = str(error) if str(error) else f"{type(error).__name__}: {repr(error)}"
+        else:
+            error_msg = error
+        logger.error(f"HTTP {status_code} - POST {endpoint_name} - {error_msg[:100]}")
+
+    @staticmethod
+    def handle_streaming_error(error: Exception, endpoint_name: str) -> str:
+        """
+        处理流式错误，确保错误信息不为空。
+
+        Args:
+            error: 异常
+            endpoint_name: 端点名称
+
+        Returns:
+            错误信息字符串
+        """
+        error_msg = str(error) if str(error) else f"{type(error).__name__}: {repr(error)}"
+        RequestHandler.log_error(endpoint_name, error_msg, 500)
+        return error_msg
+
+    @staticmethod
+    def prepare_tokenizer_data(request_data: ChatCompletionRequest) -> tuple:
+        """
+        准备用于 token 计数的数据。
+
+        Args:
+            request_data: 请求数据
+
+        Returns:
+            (messages_for_tokenizer, tools_for_tokenizer)
+        """
+        messages_for_tokenizer = [msg.model_dump() for msg in request_data.messages]
+        tools_for_tokenizer = [tool.model_dump() for tool in request_data.tools] if request_data.tools else None
+        return messages_for_tokenizer, tools_for_tokenizer
+
+    @staticmethod
+    async def create_stream_response(
+        http_client: KiroHttpClient,
+        response,
+        model: str,
+        model_cache: ModelInfoCache,
+        auth_manager: KiroAuthManager,
+        stream_func: Callable,
+        endpoint_name: str,
+        messages_for_tokenizer: Optional[List] = None,
+        tools_for_tokenizer: Optional[List] = None,
+        **kwargs
+    ) -> StreamingResponse:
+        """
+        创建流式响应。
+
+        Args:
+            http_client: HTTP 客户端
+            response: Kiro API 响应
+            model: 模型名称
+            model_cache: 模型缓存
+            auth_manager: 认证管理器
+            stream_func: 流式处理函数
+            endpoint_name: 端点名称
+            messages_for_tokenizer: 消息数据（用于 token 计数）
+            tools_for_tokenizer: 工具数据（用于 token 计数）
+            **kwargs: 其他参数
+
+        Returns:
+            StreamingResponse
+        """
+        async def stream_wrapper():
+            streaming_error = None
+            try:
+                async for chunk in stream_func(
+                    http_client.client,
+                    response,
+                    model,
+                    model_cache,
+                    auth_manager,
+                    request_messages=messages_for_tokenizer,
+                    request_tools=tools_for_tokenizer,
+                    **kwargs
+                ):
+                    yield chunk
+            except Exception as e:
+                streaming_error = e
+                raise
+            finally:
+                await http_client.close()
+                if streaming_error:
+                    RequestHandler.handle_streaming_error(streaming_error, endpoint_name)
+                else:
+                    RequestHandler.log_success(endpoint_name, is_streaming=True)
+                if debug_logger:
+                    if streaming_error:
+                        error_msg = RequestHandler.handle_streaming_error(streaming_error, endpoint_name)
+                        debug_logger.flush_on_error(500, error_msg)
+                    else:
+                        debug_logger.discard_buffers()
+
+        return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
+
+    @staticmethod
+    async def create_non_stream_response(
+        http_client: KiroHttpClient,
+        response,
+        model: str,
+        model_cache: ModelInfoCache,
+        auth_manager: KiroAuthManager,
+        collect_func: Callable,
+        endpoint_name: str,
+        messages_for_tokenizer: Optional[List] = None,
+        tools_for_tokenizer: Optional[List] = None,
+        **kwargs
+    ) -> JSONResponse:
+        """
+        创建非流式响应。
+
+        Args:
+            http_client: HTTP 客户端
+            response: Kiro API 响应
+            model: 模型名称
+            model_cache: 模型缓存
+            auth_manager: 认证管理器
+            collect_func: 收集响应函数
+            endpoint_name: 端点名称
+            messages_for_tokenizer: 消息数据（用于 token 计数）
+            tools_for_tokenizer: 工具数据（用于 token 计数）
+            **kwargs: 其他参数
+
+        Returns:
+            JSONResponse
+        """
+        collected_response = await collect_func(
+            http_client.client,
+            response,
+            model,
+            model_cache,
+            auth_manager,
+            request_messages=messages_for_tokenizer,
+            request_tools=tools_for_tokenizer,
+            **kwargs
+        )
+
+        await http_client.close()
+        RequestHandler.log_success(endpoint_name, is_streaming=False)
+
+        if debug_logger:
+            debug_logger.discard_buffers()
+
+        return JSONResponse(content=collected_response)
+
+    @staticmethod
+    async def process_request(
+        request: Request,
+        request_data: Union[ChatCompletionRequest, AnthropicMessagesRequest],
+        endpoint_name: str,
+        convert_to_openai: bool = False,
+        response_format: str = "openai"
+    ) -> Union[StreamingResponse, JSONResponse]:
+        """
+        处理请求的核心逻辑。
+
+        Args:
+            request: FastAPI Request
+            request_data: 请求数据
+            endpoint_name: 端点名称
+            convert_to_openai: 是否需要将 Anthropic 请求转换为 OpenAI 格式
+            response_format: 响应格式（"openai" 或 "anthropic"）
+
+        Returns:
+            StreamingResponse 或 JSONResponse
+        """
+        auth_manager: KiroAuthManager = request.app.state.auth_manager
+        model_cache: ModelInfoCache = request.app.state.model_cache
+
+        # 准备日志
+        RequestHandler.prepare_request_logging(request_data)
+
+        # 如果需要，转换 Anthropic 请求为 OpenAI 格式
+        if convert_to_openai:
+            try:
+                openai_request = convert_anthropic_to_openai_request(request_data)
+            except Exception as e:
+                logger.error(f"Failed to convert Anthropic request: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
+        else:
+            openai_request = request_data
+
+        # 生成会话 ID
+        conversation_id = generate_conversation_id()
+
+        # 构建 Kiro payload
+        try:
+            kiro_payload = build_kiro_payload(
+                openai_request,
+                conversation_id,
+                auth_manager.profile_arn or ""
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 记录 Kiro 请求
+        RequestHandler.log_kiro_request(kiro_payload)
+
+        # 创建 HTTP 客户端
+        http_client = KiroHttpClient(auth_manager)
+        url = f"{auth_manager.api_host}/generateAssistantResponse"
+
+        try:
+            # 发送请求到 Kiro API
+            response = await http_client.request_with_retry(
+                "POST",
+                url,
+                kiro_payload,
+                stream=True
+            )
+
+            if response.status_code != 200:
+                return await RequestHandler.handle_api_error(
+                    response,
+                    http_client,
+                    endpoint_name,
+                    response_format
+                )
+
+            # 准备 token 计数数据
+            messages_for_tokenizer, tools_for_tokenizer = RequestHandler.prepare_tokenizer_data(openai_request)
+
+            # 根据请求类型和响应格式处理
+            if request_data.stream:
+                if response_format == "anthropic":
+                    return await RequestHandler.create_stream_response(
+                        http_client,
+                        response,
+                        request_data.model,
+                        model_cache,
+                        auth_manager,
+                        stream_kiro_to_anthropic,
+                        endpoint_name,
+                        messages_for_tokenizer,
+                        tools_for_tokenizer,
+                        thinking_enabled=getattr(request_data, 'thinking', None) is not None
+                    )
+                else:
+                    return await RequestHandler.create_stream_response(
+                        http_client,
+                        response,
+                        request_data.model,
+                        model_cache,
+                        auth_manager,
+                        stream_kiro_to_openai,
+                        endpoint_name,
+                        messages_for_tokenizer,
+                        tools_for_tokenizer
+                    )
+            else:
+                if response_format == "anthropic":
+                    return await RequestHandler.create_non_stream_response(
+                        http_client,
+                        response,
+                        request_data.model,
+                        model_cache,
+                        auth_manager,
+                        collect_anthropic_response,
+                        endpoint_name,
+                        messages_for_tokenizer,
+                        tools_for_tokenizer
+                    )
+                else:
+                    return await RequestHandler.create_non_stream_response(
+                        http_client,
+                        response,
+                        request_data.model,
+                        model_cache,
+                        auth_manager,
+                        collect_stream_response,
+                        endpoint_name,
+                        messages_for_tokenizer,
+                        tools_for_tokenizer
+                    )
+
+        except HTTPException as e:
+            await http_client.close()
+            RequestHandler.log_error(endpoint_name, e.detail, e.status_code)
+            if debug_logger:
+                debug_logger.flush_on_error(e.status_code, str(e.detail))
+            raise
+        except Exception as e:
+            await http_client.close()
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Internal error: {error_msg}", exc_info=True)
+            RequestHandler.log_error(endpoint_name, error_msg, 500)
+            if debug_logger:
+                debug_logger.flush_on_error(500, error_msg)
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {error_msg}")

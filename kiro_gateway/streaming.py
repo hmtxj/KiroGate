@@ -794,13 +794,15 @@ async def stream_kiro_to_anthropic(
         )
 
     except Exception as e:
-        logger.error(f"Error during Anthropic streaming: {e}", exc_info=True)
+        # 确保错误信息不为空
+        error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+        logger.error(f"Error during Anthropic streaming: {error_msg}", exc_info=True)
         # Отправляем error event
         error_event = {
             "type": "error",
             "error": {
                 "type": "api_error",
-                "message": str(e)
+                "message": error_msg
             }
         }
         yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"

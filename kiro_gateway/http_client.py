@@ -18,79 +18,117 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Kiro API HTTP 客户端，支持重试逻辑。
+HTTP 客户端管理器。
 
-Обрабатывает:
-- 403: автоматический refresh токена и повтор
-- 429: exponential backoff
-- 5xx: exponential backoff
-- Таймауты: exponential backoff
+全局 HTTP 客户端连接池管理，提高性能。
 """
 
 import asyncio
 from typing import Optional
 
 import httpx
-from fastapi import HTTPException
 from loguru import logger
 
-from kiro_gateway.config import MAX_RETRIES, BASE_RETRY_DELAY, FIRST_TOKEN_TIMEOUT, FIRST_TOKEN_MAX_RETRIES
 from kiro_gateway.auth import KiroAuthManager
-from kiro_gateway.utils import get_kiro_headers
+from kiro_gateway.config import settings
+
+
+class GlobalHTTPClientManager:
+    """
+    全局 HTTP 客户端管理器。
+
+    维护全局连接池，避免为每个请求创建新的客户端。
+    支持配置连接池参数。
+    """
+
+    def __init__(self):
+        """初始化全局客户端管理器。"""
+        self._client: Optional[httpx.AsyncClient] = None
+        self._lock = asyncio.Lock()
+
+    async def get_client(self, timeout: float = 300) -> httpx.AsyncClient:
+        """
+        获取或创建 HTTP 客户端。
+
+        Args:
+            timeout: 请求超时时间（秒）
+
+        Returns:
+            HTTP 客户端实例
+        """
+        async with self._lock:
+            if self._client is None or self._client.is_closed:
+                # 配置连接池参数
+                limits = httpx.Limits(
+                    max_connections=100,  # 最大连接数
+                    max_keepalive_connections=20,  # 最大保持活动连接数
+                    keepalive_expiry=30.0  # 保持活动连接的过期时间
+                )
+
+                self._client = httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    limits=limits,
+                    http2=False  # HTTP/2 需要额外安装 httpx[http2]
+                )
+                logger.debug("Created new global HTTP client with connection pool")
+
+            return self._client
+
+    async def close(self) -> None:
+        """关闭全局 HTTP 客户端。"""
+        async with self._lock:
+            if self._client and not self._client.is_closed:
+                await self._client.aclose()
+                logger.debug("Closed global HTTP client")
+
+
+# 创建全局管理器实例
+global_http_client_manager = GlobalHTTPClientManager()
 
 
 class KiroHttpClient:
     """
-    HTTP клиент для Kiro API с поддержкой retry логики.
-    
-    Автоматически обрабатывает ошибки и повторяет запросы:
-    - 403: обновляет токен и повторяет
-    - 429: ждёт с exponential backoff
-    - 5xx: ждёт с exponential backoff
-    - Таймауты: ждёт с exponential backoff
-    Attributes:
-        auth_manager: Менеджер аутентификации для получения токенов
-        client: HTTP клиент httpx
-    
-    Example:
-        >>> client = KiroHttpClient(auth_manager)
-        >>> response = await client.request_with_retry(
-        ...     "POST",
-        ...     "https://api.example.com/endpoint",
-        ...     {"data": "value"},
-        ...     stream=True
-        ... )
+    Kiro API HTTP 客户端，支持重试逻辑。
+
+    使用全局连接池以提高性能。
+    自动处理各种错误类型：
+    - 403: 自动刷新 token 并重试
+    - 429: 指数退避重试
+    - 5xx: 指数退避重试
+    - 超时: 指数退避重试
     """
-    
+
     def __init__(self, auth_manager: KiroAuthManager):
         """
-        Инициализирует HTTP клиент.
-        
+        初始化 HTTP 客户端。
+
         Args:
-            auth_manager: Менеджер аутентификации
+            auth_manager: 认证管理器
         """
         self.auth_manager = auth_manager
-        self.client: Optional[httpx.AsyncClient] = None
-    
+        self.client = None  # 将使用全局客户端
+
     async def _get_client(self, timeout: float = 300) -> httpx.AsyncClient:
         """
-        Возвращает или создаёт HTTP клиент.
-        
+        获取 HTTP 客户端（使用全局连接池）。
+
         Args:
-            timeout: Таймаут для запросов (секунды)
-        
+            timeout: 请求超时时间（秒）
+
         Returns:
-            Активный HTTP клиент
+            HTTP 客户端实例
         """
-        if self.client is None or self.client.is_closed:
-            self.client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
-        return self.client
-    
+        return await global_http_client_manager.get_client(timeout)
+
     async def close(self) -> None:
-        """Закрывает HTTP клиент."""
-        if self.client and not self.client.is_closed:
-            await self.client.aclose()
-    
+        """
+        关闭客户端（实际上不关闭全局客户端）。
+
+        保留此方法以保持向后兼容性。
+        """
+        pass
+
     async def request_with_retry(
         self,
         method: str,
@@ -100,95 +138,94 @@ class KiroHttpClient:
         first_token_timeout: float = None
     ) -> httpx.Response:
         """
-        Выполняет HTTP запрос с retry логикой.
-        
-        Автоматически обрабатывает различные типы ошибок:
-        - 403: обновляет токен через auth_manager.force_refresh() и повторяет
-        - 429: ждёт с exponential backoff (1s, 2s, 4s)
-        - 5xx: ждёт с exponential backoff
-        - Таймауты: ждёт с exponential backoff (для streaming - retry при first token timeout)
-        
+        执行带重试逻辑的 HTTP 请求。
+
+        自动处理各种错误类型：
+        - 403: 刷新 token 并重试
+        - 429: 指数退避重试
+        - 5xx: 指数退避重试
+        - 超时: 指数退避重试
+
         Args:
-            method: HTTP метод (GET, POST, etc.)
-            url: URL запроса
-            json_data: Тело запроса (JSON)
-            stream: Использовать streaming (по умолчанию False)
-            first_token_timeout: Таймаут ожидания первого ответа для streaming (секунды).
-                                 Если None, используется FIRST_TOKEN_TIMEOUT из config.
-        
+            method: HTTP 方法
+            url: 请求 URL
+            json_data: JSON 请求体
+            stream: 是否使用流式响应
+            first_token_timeout: 首个 token 超时时间（仅用于流式）
+
         Returns:
-            httpx.Response с успешным ответом
-        
+            HTTP 响应
+
         Raises:
-            HTTPException: При неудаче после всех попыток (502)
+            HTTPException: 重试失败后抛出
         """
-        # Для streaming используем first_token_timeout, для обычных запросов - 300 секунд
+        # 根据是否为流式设置超时和重试次数
         if stream:
-            timeout = first_token_timeout if first_token_timeout is not None else FIRST_TOKEN_TIMEOUT
-            max_retries = FIRST_TOKEN_MAX_RETRIES
+            timeout = first_token_timeout or settings.first_token_timeout
+            max_retries = settings.first_token_max_retries
         else:
             timeout = 300
-            max_retries = MAX_RETRIES
-        
+            max_retries = settings.max_retries
+
         client = await self._get_client(timeout)
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
-                # Получаем актуальный токен
+                # 获取当前有效的 token
                 token = await self.auth_manager.get_access_token()
-                headers = get_kiro_headers(self.auth_manager, token)
-                
+                headers = self._get_headers(token)
+
                 if stream:
                     req = client.build_request(method, url, json=json_data, headers=headers)
                     response = await client.send(req, stream=True)
                 else:
                     response = await client.request(method, url, json=json_data, headers=headers)
-                
-                # Проверяем статус
+
+                # 检查响应状态
                 if response.status_code == 200:
                     return response
-                
-                # 403 - токен истёк, обновляем и повторяем
+
+                # 403 - token 过期，刷新并重试
                 if response.status_code == 403:
-                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{MAX_RETRIES})")
+                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{settings.max_retries})")
                     await self.auth_manager.force_refresh()
                     continue
-                
-                # 429 - rate limit, ждём и повторяем
+
+                # 429 - 速率限制，等待后重试
                 if response.status_code == 429:
-                    delay = BASE_RETRY_DELAY * (2 ** attempt)
-                    logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    delay = settings.base_retry_delay * (2 ** attempt)
+                    logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{settings.max_retries})")
                     await asyncio.sleep(delay)
                     continue
-                
-                # 5xx - серверная ошибка, ждём и повторяем
+
+                # 5xx - 服务器错误，等待后重试
                 if 500 <= response.status_code < 600:
-                    delay = BASE_RETRY_DELAY * (2 ** attempt)
-                    logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    delay = settings.base_retry_delay * (2 ** attempt)
+                    logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{settings.max_retries})")
                     await asyncio.sleep(delay)
                     continue
-                
-                # Другие ошибки - возвращаем как есть
+
+                # 其他错误直接返回
                 return response
-                
+
             except httpx.TimeoutException as e:
                 last_error = e
                 if stream:
-                    # Для streaming - это first token timeout, retry без задержки
+                    # 流式请求的首个 token 超时
                     logger.warning(f"First token timeout after {timeout}s (attempt {attempt + 1}/{max_retries})")
                 else:
-                    delay = BASE_RETRY_DELAY * (2 ** attempt)
+                    delay = settings.base_retry_delay * (2 ** attempt)
                     logger.warning(f"Timeout, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
-                
+
             except httpx.RequestError as e:
                 last_error = e
-                delay = BASE_RETRY_DELAY * (2 ** attempt)
+                delay = settings.base_retry_delay * (2 ** attempt)
                 logger.warning(f"Request error: {e}, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
-        
-        # Все попытки исчерпаны
+
+        # 所有重试都失败
         if stream:
             raise HTTPException(
                 status_code=504,
@@ -199,11 +236,29 @@ class KiroHttpClient:
                 status_code=502,
                 detail=f"Failed to complete request after {max_retries} attempts: {last_error}"
             )
-    
+
+    def _get_headers(self, token: str) -> dict:
+        """
+        构建请求头。
+
+        Args:
+            token: 访问令牌
+
+        Returns:
+            请求头字典
+        """
+        from kiro_gateway.utils import get_kiro_headers
+        return get_kiro_headers(self.auth_manager, token)
+
     async def __aenter__(self) -> "KiroHttpClient":
-        """Поддержка async context manager."""
+        """支持 async context manager。"""
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Закрывает клиент при выходе из контекста."""
-        await self.close()
+        """退出上下文时不关闭全局客户端。"""
+        pass
+
+
+async def close_global_http_client():
+    """关闭全局 HTTP 客户端（应用关闭时调用）。"""
+    await global_http_client_manager.close()

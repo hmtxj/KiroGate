@@ -18,155 +18,250 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 """
-KiroBridge 配置。
+KiroGate 配置模块。
 
-Централизованное хранение всех настроек, констант и маппингов.
-Загружает переменные окружения и предоставляет типизированный доступ к ним.
+集中管理所有配置项、常量和模型映射。
+使用 Pydantic Settings 进行类型安全的环境变量加载。
 """
 
-import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
-from dotenv import load_dotenv
 
-# Загрузка переменных окружения
-load_dotenv()
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _get_raw_env_value(var_name: str, env_file: str = ".env") -> Optional[str]:
     """
-    Читает значение переменной из .env файла без обработки escape-последовательностей.
-    
-    Это необходимо для корректной работы с путями на Windows, где обратные слэши
-    (например, D:\\Projects\\file.json) могут быть ошибочно интерпретированы
-    как escape-последовательности (\\a -> bell, \\n -> newline и т.д.).
-    
+    从 .env 文件读取原始变量值，不处理转义序列。
+
+    这对于 Windows 路径很重要，因为反斜杠（如 D:\\Projects\\file.json）
+    可能被错误地解释为转义序列（\\a -> bell, \\n -> newline 等）。
+
     Args:
-        var_name: Имя переменной окружения
-        env_file: Путь к .env файлу (по умолчанию ".env")
-    
+        var_name: 环境变量名
+        env_file: .env 文件路径（默认 ".env"）
+
     Returns:
-        Сырое значение переменной или None если не найдено
+        原始变量值，如果未找到则返回 None
     """
     env_path = Path(env_file)
     if not env_path.exists():
         return None
-    
+
     try:
-        # Читаем файл как есть, без интерпретации
         content = env_path.read_text(encoding="utf-8")
-        
-        # Ищем переменную с учётом разных форматов:
-        # VAR="value" или VAR='value' или VAR=value
-        # Паттерн захватывает значение в кавычках или без них
         pattern = rf'^{re.escape(var_name)}=(["\']?)(.+?)\1\s*$'
-        
+
         for line in content.splitlines():
             line = line.strip()
             if line.startswith("#") or not line:
                 continue
-            
+
             match = re.match(pattern, line)
             if match:
-                # Возвращаем значение как есть, без обработки escape-последовательностей
                 return match.group(2)
     except Exception:
         pass
-    
+
     return None
 
+
+class Settings(BaseSettings):
+    """
+    应用程序配置类。
+
+    使用 Pydantic Settings 进行类型安全的环境变量加载和验证。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # ==================================================================================================
+    # 代理服务器设置
+    # ==================================================================================================
+
+    # 代理 API 密钥（客户端需要在 Authorization header 中传递）
+    proxy_api_key: str = Field(default="changeme_proxy_secret", alias="PROXY_API_KEY")
+
+    # ==================================================================================================
+    # Kiro API 凭证
+    # ==================================================================================================
+
+    # 用于刷新 access token 的 refresh token
+    refresh_token: str = Field(default="", alias="REFRESH_TOKEN")
+
+    # AWS CodeWhisperer Profile ARN
+    profile_arn: str = Field(default="", alias="PROFILE_ARN")
+
+    # AWS 区域（默认 us-east-1）
+    region: str = Field(default="us-east-1", alias="KIRO_REGION")
+
+    # 凭证文件路径（可选，作为 .env 的替代）
+    kiro_creds_file: str = Field(default="", alias="KIRO_CREDS_FILE")
+
+    # ==================================================================================================
+    # Token 设置
+    # ==================================================================================================
+
+    # Token 刷新阈值（秒）- 在过期前多久刷新
+    token_refresh_threshold: int = Field(default=600)
+
+    # ==================================================================================================
+    # 重试配置
+    # ==================================================================================================
+
+    # 最大重试次数
+    max_retries: int = Field(default=3, alias="MAX_RETRIES")
+
+    # 重试基础延迟（秒）- 使用指数退避：delay * (2 ** attempt)
+    base_retry_delay: float = Field(default=1.0, alias="BASE_RETRY_DELAY")
+
+    # ==================================================================================================
+    # 模型缓存设置
+    # ==================================================================================================
+
+    # 模型缓存 TTL（秒）
+    model_cache_ttl: int = Field(default=3600, alias="MODEL_CACHE_TTL")
+
+    # 默认最大输入 token 数
+    default_max_input_tokens: int = Field(default=200000)
+
+    # ==================================================================================================
+    # Tool Description 处理（Kiro API 限制）
+    # ==================================================================================================
+
+    # Tool description 最大长度（字符）
+    # 超过此限制的描述将被移至 system prompt
+    tool_description_max_length: int = Field(default=10000, alias="TOOL_DESCRIPTION_MAX_LENGTH")
+
+    # ==================================================================================================
+    # 日志设置
+    # ==================================================================================================
+
+    # 日志级别：TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    # ==================================================================================================
+    # 首个 Token 超时设置（流式重试）
+    # ==================================================================================================
+
+    # 等待模型首个 token 的超时时间（秒）
+    first_token_timeout: float = Field(default=15.0, alias="FIRST_TOKEN_TIMEOUT")
+
+    # 首个 token 超时时的最大重试次数
+    first_token_max_retries: int = Field(default=3, alias="FIRST_TOKEN_MAX_RETRIES")
+
+    # ==================================================================================================
+    # 调试设置
+    # ==================================================================================================
+
+    # 调试日志模式：off, errors, all
+    debug_mode: str = Field(default="off", alias="DEBUG_MODE")
+
+    # 调试日志目录
+    debug_dir: str = Field(default="debug_logs", alias="DEBUG_DIR")
+
+    # ==================================================================================================
+    # 速率限制设置
+    # ==================================================================================================
+
+    # 速率限制：每分钟请求数（0 表示禁用）
+    rate_limit_per_minute: int = Field(default=0, alias="RATE_LIMIT_PER_MINUTE")
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        """验证日志级别。"""
+        valid_levels = {"TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        v = v.upper()
+        if v not in valid_levels:
+            return "INFO"
+        return v
+
+    @field_validator("debug_mode")
+    @classmethod
+    def validate_debug_mode(cls, v: str) -> str:
+        """验证调试模式。"""
+        valid_modes = {"off", "errors", "all"}
+        v = v.lower()
+        if v not in valid_modes:
+            return "off"
+        return v
+
+
+# 创建全局设置实例
+settings = Settings()
+
+# 处理 KIRO_CREDS_FILE 的 Windows 路径问题
+_raw_creds_file = _get_raw_env_value("KIRO_CREDS_FILE") or settings.kiro_creds_file
+if _raw_creds_file:
+    settings.kiro_creds_file = str(Path(_raw_creds_file))
+
 # ==================================================================================================
-# Настройки прокси-сервера
+# 向后兼容的导出（保持现有代码正常工作）
 # ==================================================================================================
 
-# API ключ для доступа к прокси (клиенты должны передавать его в Authorization header)
-PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "changeme_proxy_secret")
+PROXY_API_KEY: str = settings.proxy_api_key
+REFRESH_TOKEN: str = settings.refresh_token
+PROFILE_ARN: str = settings.profile_arn
+REGION: str = settings.region
+KIRO_CREDS_FILE: str = settings.kiro_creds_file
+TOKEN_REFRESH_THRESHOLD: int = settings.token_refresh_threshold
+MAX_RETRIES: int = settings.max_retries
+BASE_RETRY_DELAY: float = settings.base_retry_delay
+MODEL_CACHE_TTL: int = settings.model_cache_ttl
+DEFAULT_MAX_INPUT_TOKENS: int = settings.default_max_input_tokens
+TOOL_DESCRIPTION_MAX_LENGTH: int = settings.tool_description_max_length
+LOG_LEVEL: str = settings.log_level
+FIRST_TOKEN_TIMEOUT: float = settings.first_token_timeout
+FIRST_TOKEN_MAX_RETRIES: int = settings.first_token_max_retries
+DEBUG_MODE: str = settings.debug_mode
+DEBUG_DIR: str = settings.debug_dir
+RATE_LIMIT_PER_MINUTE: int = settings.rate_limit_per_minute
 
 # ==================================================================================================
-# Kiro API Credentials
+# Kiro API URL 模板
 # ==================================================================================================
 
-# Refresh token для обновления access token
-REFRESH_TOKEN: str = os.getenv("REFRESH_TOKEN", "")
-
-# Profile ARN для AWS CodeWhisperer
-PROFILE_ARN: str = os.getenv("PROFILE_ARN", "")
-
-# Регион AWS (по умолчанию us-east-1)
-REGION: str = os.getenv("KIRO_REGION", "us-east-1")
-
-# Путь к файлу с credentials (опционально, альтернатива .env)
-# Читаем напрямую из .env чтобы избежать проблем с escape-последовательностями на Windows
-# (например, \a в пути D:\Projects\adolf интерпретируется как bell character)
-_raw_creds_file = _get_raw_env_value("KIRO_CREDS_FILE") or os.getenv("KIRO_CREDS_FILE", "")
-# Нормализуем путь для кроссплатформенной совместимости
-KIRO_CREDS_FILE: str = str(Path(_raw_creds_file)) if _raw_creds_file else ""
-
-# ==================================================================================================
-# Kiro API URL Templates
-# ==================================================================================================
-
-# URL для обновления токена
 KIRO_REFRESH_URL_TEMPLATE: str = "https://prod.{region}.auth.desktop.kiro.dev/refreshToken"
-
-# Хост для основного API (generateAssistantResponse)
 KIRO_API_HOST_TEMPLATE: str = "https://codewhisperer.{region}.amazonaws.com"
-
-# Хост для Q API (ListAvailableModels)
 KIRO_Q_HOST_TEMPLATE: str = "https://q.{region}.amazonaws.com"
 
 # ==================================================================================================
-# Настройки токенов
+# 模型映射
 # ==================================================================================================
 
-# Время до истечения токена, когда нужно обновить (в секундах)
-# По умолчанию 10 минут - обновляем токен заранее, чтобы избежать ошибок
-TOKEN_REFRESH_THRESHOLD: int = 600
-
-# ==================================================================================================
-# Retry конфигурация
-# ==================================================================================================
-
-# Максимальное количество попыток при ошибках
-MAX_RETRIES: int = 3
-
-# Базовая задержка между попытками (секунды)
-# Используется exponential backoff: delay * (2 ** attempt)
-BASE_RETRY_DELAY: float = 1.0
-
-# ==================================================================================================
-# Маппинг моделей
-# ==================================================================================================
-
-# Внешние имена моделей (OpenAI-совместимые) -> внутренние ID Kiro
-# Клиенты используют внешние имена, а мы конвертируем их во внутренние
+# 外部模型名称（OpenAI 兼容）-> Kiro 内部 ID
 MODEL_MAPPING: Dict[str, str] = {
-    # Claude Opus 4.5 - топовая модель
+    # Claude Opus 4.5 - 顶级模型
     "claude-opus-4-5": "claude-opus-4.5",
     "claude-opus-4-5-20251101": "claude-opus-4.5",
-    
-    # Claude Haiku 4.5 - быстрая модель
+
+    # Claude Haiku 4.5 - 快速模型
     "claude-haiku-4-5": "claude-haiku-4.5",
-    "claude-haiku-4.5": "claude-haiku-4.5",  # Прямой проброс
-    
-    # Claude Sonnet 4.5 - улучшенная модель
+    "claude-haiku-4.5": "claude-haiku-4.5",
+
+    # Claude Sonnet 4.5 - 增强模型
     "claude-sonnet-4-5": "CLAUDE_SONNET_4_5_20250929_V1_0",
     "claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0",
-    
-    # Claude Sonnet 4 - сбалансированная модель
+
+    # Claude Sonnet 4 - 平衡模型
     "claude-sonnet-4": "CLAUDE_SONNET_4_20250514_V1_0",
     "claude-sonnet-4-20250514": "CLAUDE_SONNET_4_20250514_V1_0",
-    
-    # Claude 3.7 Sonnet - legacy модель
+
+    # Claude 3.7 Sonnet - 旧版模型
     "claude-3-7-sonnet-20250219": "CLAUDE_3_7_SONNET_20250219_V1_0",
-    
-    # Алиасы для удобства
+
+    # 便捷别名
     "auto": "claude-sonnet-4.5",
 }
 
-# Список доступных моделей для эндпоинта /v1/models
-# Эти модели будут отображаться клиентам как доступные
+# /v1/models 端点返回的可用模型列表
 AVAILABLE_MODELS: List[str] = [
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
@@ -179,147 +274,37 @@ AVAILABLE_MODELS: List[str] = [
 ]
 
 # ==================================================================================================
-# Настройки кэша моделей
-# ==================================================================================================
-
-# TTL кэша моделей в секундах (1 час)
-MODEL_CACHE_TTL: int = 3600
-
-# Максимальное количество input токенов по умолчанию
-DEFAULT_MAX_INPUT_TOKENS: int = 200000
-
-# ==================================================================================================
-# Tool Description Handling (Kiro API Limitations)
-# ==================================================================================================
-
-# Kiro API возвращает ошибку 400 "Improperly formed request" при слишком длинных
-# описаниях инструментов в toolSpecification.description.
-#
-# Решение: Tool Documentation Reference Pattern
-# - Если description ≤ лимита → оставляем как есть
-# - Если description > лимита:
-#   * В toolSpecification.description → ссылка на system prompt:
-#     "[Full documentation in system prompt under '## Tool: {name}']"
-#   * В system prompt добавляется секция "## Tool: {name}" с полным описанием
-#
-# Модель видит явную ссылку и точно понимает, где искать полную документацию.
-
-# Максимальная длина description для tool в символах.
-# Описания длиннее этого лимита будут перенесены в system prompt.
-# Установите 0 для отключения (не рекомендуется - вызовет ошибки Kiro API).
-TOOL_DESCRIPTION_MAX_LENGTH: int = int(os.getenv("TOOL_DESCRIPTION_MAX_LENGTH", "10000"))
-
-# ==================================================================================================
-# Logging Settings
-# ==================================================================================================
-
-# Log level for the application
-# Available levels: TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
-# Default: INFO (recommended for production)
-# Set to DEBUG for detailed troubleshooting
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-
-# ==================================================================================================
-# First Token Timeout Settings (Streaming Retry)
-# ==================================================================================================
-
-# Таймаут ожидания первого токена от модели (в секундах).
-# Если модель не отвечает в течение этого времени, запрос будет отменён и повторён.
-# Это помогает справиться с "зависшими" запросами, когда модель долго думает.
-# По умолчанию: 30 секунд (рекомендуется для production)
-# Установите меньшее значение (например, 10-15) для более агрессивного retry.
-FIRST_TOKEN_TIMEOUT: float = float(os.getenv("FIRST_TOKEN_TIMEOUT", "15"))
-
-# Максимальное количество попыток при таймауте первого токена.
-# После исчерпания всех попыток будет возвращена ошибка.
-# По умолчанию: 3 попытки
-FIRST_TOKEN_MAX_RETRIES: int = int(os.getenv("FIRST_TOKEN_MAX_RETRIES", "3"))
-
-# ==================================================================================================
-# Debug Settings
-# ==================================================================================================
-
-# Legacy option (deprecated, will be removed in future releases)
-# Use DEBUG_MODE instead
-_DEBUG_LAST_REQUEST_RAW: str = os.getenv("DEBUG_LAST_REQUEST", "").lower()
-DEBUG_LAST_REQUEST: bool = _DEBUG_LAST_REQUEST_RAW in ("true", "1", "yes")
-
-# Debug logging mode:
-# - off: disabled (default)
-# - errors: save logs only for failed requests (4xx, 5xx)
-# - all: save logs for every request (overwrites on each request)
-_DEBUG_MODE_RAW: str = os.getenv("DEBUG_MODE", "").lower()
-
-# Priority logic:
-# 1. If DEBUG_MODE is explicitly set → use it
-# 2. If DEBUG_MODE is not set but DEBUG_LAST_REQUEST=true → mode "all" (backward compatibility)
-# 3. Otherwise → mode "off"
-if _DEBUG_MODE_RAW in ("off", "errors", "all"):
-    DEBUG_MODE: str = _DEBUG_MODE_RAW
-elif DEBUG_LAST_REQUEST:
-    DEBUG_MODE: str = "all"
-else:
-    DEBUG_MODE: str = "off"
-
-# Directory for debug log files
-DEBUG_DIR: str = os.getenv("DEBUG_DIR", "debug_logs")
-
-
-def _warn_deprecated_debug_setting():
-    """
-    Выводит предупреждение если используется deprecated DEBUG_LAST_REQUEST.
-    Вызывается при старте приложения.
-    """
-    if _DEBUG_LAST_REQUEST_RAW and not _DEBUG_MODE_RAW:
-        import sys
-        # ANSI escape codes: желтый текст
-        YELLOW = "\033[93m"
-        RESET = "\033[0m"
-        
-        warning_text = f"""
-{YELLOW}⚠️  DEPRECATED: DEBUG_LAST_REQUEST will be removed in future releases.
-    Please use DEBUG_MODE instead:
-      - DEBUG_MODE=off     (disabled, default)
-      - DEBUG_MODE=errors  (save logs only for failed requests)
-      - DEBUG_MODE=all     (save logs for every request)
-    
-    DEBUG_LAST_REQUEST=true is equivalent to DEBUG_MODE=all
-    See .env.example for more details.{RESET}
-"""
-        print(warning_text, file=sys.stderr)
-
-# ==================================================================================================
 # 版本信息
 # ==================================================================================================
 
-APP_VERSION: str = "2.0.0"
+APP_VERSION: str = "2.1.0"
 APP_TITLE: str = "KiroGate"
 APP_DESCRIPTION: str = "OpenAI & Anthropic 兼容的 Kiro API 网关。基于 kiro-openai-gateway by Jwadow"
 
 
 def get_kiro_refresh_url(region: str) -> str:
-    """Возвращает URL для обновления токена для указанного региона."""
+    """返回指定区域的 token 刷新 URL。"""
     return KIRO_REFRESH_URL_TEMPLATE.format(region=region)
 
 
 def get_kiro_api_host(region: str) -> str:
-    """Возвращает хост API для указанного региона."""
+    """返回指定区域的 API 主机。"""
     return KIRO_API_HOST_TEMPLATE.format(region=region)
 
 
 def get_kiro_q_host(region: str) -> str:
-    """Возвращает хост Q API для указанного региона."""
+    """返回指定区域的 Q API 主机。"""
     return KIRO_Q_HOST_TEMPLATE.format(region=region)
 
 
 def get_internal_model_id(external_model: str) -> str:
     """
-    Конвертирует внешнее имя модели во внутренний ID Kiro.
-    
+    将外部模型名称转换为 Kiro 内部 ID。
+
     Args:
-        external_model: Внешнее имя модели (например, "claude-sonnet-4-5")
-    
+        external_model: 外部模型名称（如 "claude-sonnet-4-5"）
+
     Returns:
-        Внутренний ID модели для Kiro API
+        Kiro API 的内部模型 ID
     """
     return MODEL_MAPPING.get(external_model, external_model)
