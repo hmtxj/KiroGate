@@ -1,22 +1,25 @@
-# KiroGate - Docker 镜像
-# Based on kiro-openai-gateway by Jwadow
-
+# KiroGate - Docker Image
 FROM python:3.11-slim
 
-# 设置工作目录
+# 工作目录
 WORKDIR /app
 
-# 设置环境变量
+# Python 环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 安装依赖
+# 安装系统依赖（避免部分 pip 包报错）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制应用代码
+# 复制代码
 COPY kiro_gateway/ ./kiro_gateway/
 COPY main.py .
 
@@ -25,12 +28,11 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# 暴露端口
+# 暴露端口（Fly 必须）
 EXPOSE 8000
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# ⚠️【重要】调试阶段先不加 HEALTHCHECK
+# 等服务稳定后再加回 /health
 
-# 启动命令
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动 FastAPI
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
