@@ -3066,11 +3066,12 @@ def render_admin_page() -> str:
 
 def render_user_page(user) -> str:
     """Render the user dashboard page."""
+    display_name = user.username or "用户"
     # Determine avatar display
     if user.avatar_url:
-        avatar_html = f'<img src="{user.avatar_url}" class="w-16 h-16 rounded-full object-cover" alt="{user.username}">'
+        avatar_html = f'<img src="{user.avatar_url}" class="w-16 h-16 rounded-full object-cover" alt="{display_name}">'
     else:
-        avatar_html = f'<div class="w-16 h-16 rounded-full bg-indigo-500/20 flex items-center justify-center text-2xl">{user.username[0].upper() if user.username else "👤"}</div>'
+        avatar_html = f'<div class="w-16 h-16 rounded-full bg-indigo-500/20 flex items-center justify-center text-2xl">{display_name[0].upper() if display_name else "👤"}</div>'
 
     # Determine user info display based on login provider
     if user.github_id:
@@ -3079,6 +3080,7 @@ def render_user_page(user) -> str:
         user_info = f'<span style="color: var(--text-muted);">信任等级: Lv.{user.trust_level}</span>'
     else:
         user_info = ''
+    user_info_html = f'<div class="mt-1">{user_info}</div>' if user_info else ''
 
     return f'''<!DOCTYPE html>
 <html lang="zh">
@@ -3087,13 +3089,21 @@ def render_user_page(user) -> str:
   {COMMON_NAV}
   <main class="max-w-6xl mx-auto px-4 py-8">
     <div class="card mb-6">
-      <div class="flex items-center gap-4">
+      <div class="flex flex-col sm:flex-row sm:items-center gap-4">
         {avatar_html}
-        <div>
-          <h1 class="text-2xl font-bold">{user.username}</h1>
-          <p>{user_info}</p>
+        <div class="flex-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-2xl font-bold">你好，{display_name}</h1>
+          </div>
+          <p id="greetingText" class="text-sm" style="color: var(--text-muted);">欢迎回来，今天想先做什么？</p>
+          {user_info_html}
+          <div class="flex flex-wrap gap-2 mt-3">
+            <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine'); showDonateModal();" class="btn-primary text-sm px-3 py-1.5">+ 添加 Token</button>
+            <button type="button" onclick="showTab('keys'); generateKey();" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">生成 API Key</button>
+            <a href="/playground" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">去测试</a>
+          </div>
         </div>
-        <div class="ml-auto">
+        <div class="sm:ml-auto">
           <a href="/oauth2/logout" class="btn-primary">退出登录</a>
         </div>
       </div>
@@ -3114,6 +3124,20 @@ def render_user_page(user) -> str:
       <div class="card text-center">
         <div class="text-3xl font-bold text-purple-400" id="requestCount">-</div>
         <div class="text-sm" style="color: var(--text-muted);">总请求</div>
+      </div>
+    </div>
+    <div id="userGuide" class="card mb-6">
+      <div class="flex items-start gap-3">
+        <div class="text-2xl">🧭</div>
+        <div>
+          <h2 id="guideTitle" class="font-bold">欢迎使用 KiroGate</h2>
+          <p id="guideText" class="text-sm mt-1" style="color: var(--text-muted);">两步即可开始调用：先添加 Token，再生成 API Key。</p>
+          <div id="guideActions" class="flex flex-wrap gap-2 mt-3">
+            <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine'); showDonateModal();" class="btn-primary text-sm px-3 py-1.5">添加 Token</button>
+            <button type="button" onclick="showTab('keys'); generateKey();" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">生成 API Key</button>
+            <a href="/docs" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">查看文档</a>
+          </div>
+        </div>
       </div>
     </div>
     <div class="flex gap-2 mb-4 border-b" style="border-color: var(--border);">
@@ -3459,6 +3483,66 @@ def render_user_page(user) -> str:
       return `<span class="text-red-400">${{status || '-'}}</span>`;
     }}
 
+    function setGreeting() {{
+      const el = document.getElementById('greetingText');
+      if (!el) return;
+      const hour = new Date().getHours();
+      let text = '你好，今天想先做什么？';
+      if (hour < 6) text = '夜深了，注意休息，想先做点什么？';
+      else if (hour < 12) text = '早上好，今天想先做什么？';
+      else if (hour < 18) text = '下午好，今天想先做什么？';
+      else text = '晚上好，今天想先做什么？';
+      el.textContent = text;
+    }}
+
+    function updateUserGuide(profile) {{
+      const tokenCount = profile.token_count || 0;
+      const keyCount = profile.api_key_count || 0;
+      const guideTitle = document.getElementById('guideTitle');
+      const guideText = document.getElementById('guideText');
+      const guideActions = document.getElementById('guideActions');
+      if (!guideTitle || !guideText || !guideActions) return;
+
+      if (tokenCount === 0 && keyCount === 0) {{
+        guideTitle.textContent = '新手引导：两步就绪';
+        guideText.textContent = '先添加 Refresh Token，再生成 API Key，即可开始调用。';
+        guideActions.innerHTML = `
+          <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine'); showDonateModal();" class="btn-primary text-sm px-3 py-1.5">添加 Token</button>
+          <button type="button" onclick="showTab('keys'); generateKey();" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">生成 API Key</button>
+          <a href="/docs" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">查看文档</a>
+        `;
+        return;
+      }}
+
+      if (tokenCount === 0) {{
+        guideTitle.textContent = '补充 Token 获取更稳定体验';
+        guideText.textContent = '当前 API Key 将使用公开 Token 池，建议添加自己的 Token。';
+        guideActions.innerHTML = `
+          <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine'); showDonateModal();" class="btn-primary text-sm px-3 py-1.5">添加 Token</button>
+          <button type="button" onclick="showTab('tokens'); showTokenSubTab('public');" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">查看公开 Token 池</button>
+        `;
+        return;
+      }}
+
+      if (keyCount === 0) {{
+        guideTitle.textContent = '只差一步：生成 API Key';
+        guideText.textContent = '你已经添加 Token，生成 Key 后即可调用接口。';
+        guideActions.innerHTML = `
+          <button type="button" onclick="showTab('keys'); generateKey();" class="btn-primary text-sm px-3 py-1.5">生成 API Key</button>
+          <a href="/playground" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">去测试</a>
+        `;
+        return;
+      }}
+
+      guideTitle.textContent = '准备就绪';
+      guideText.textContent = '你已具备调用条件，可以开始测试或继续管理 Token。';
+      guideActions.innerHTML = `
+        <a href="/playground" class="btn-primary text-sm px-3 py-1.5">去测试</a>
+        <button type="button" onclick="showTab('tokens'); showTokenSubTab('mine');" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">管理 Token</button>
+        <a href="/docs" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">查看文档</a>
+      `;
+    }}
+
     function showTab(tab) {{
       currentTab = tab;
       document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
@@ -3521,6 +3605,7 @@ def render_user_page(user) -> str:
         document.getElementById('apiKeyCount').textContent = d.api_key_count || 0;
         document.getElementById('requestCount').textContent = '-';
         userHasTokens = (d.token_count || 0) > 0;
+        updateUserGuide(d);
       }} catch (e) {{ console.error(e); }}
     }}
 
@@ -3583,7 +3668,7 @@ def render_user_page(user) -> str:
     function renderTokenTable(tokens) {{
       const tb = document.getElementById('tokenTable');
       if (!tokens || !tokens.length) {{
-        tb.innerHTML = '<tr><td colspan="7" class="py-6 text-center" style="color: var(--text-muted);">暂无 Token，点击上方按钮添加</td></tr>';
+        tb.innerHTML = '<tr><td colspan="7" class="py-8 text-center" style="color: var(--text-muted);"><div class="mb-3">还没有 Token，先添加一个吧</div><button type="button" onclick="showDonateModal()" class="btn-primary text-sm px-3 py-1.5">+ 添加 Token</button></td></tr>';
         document.getElementById('tokensPagination').style.display = 'none';
         document.getElementById('selectAllTokens').checked = false;
         return;
@@ -3760,7 +3845,7 @@ def render_user_page(user) -> str:
     function renderKeysTable(keys) {{
       const tb = document.getElementById('keyTable');
       if (!keys || !keys.length) {{
-        tb.innerHTML = '<tr><td colspan="7" class="py-6 text-center" style="color: var(--text-muted);">暂无 API Key，点击上方按钮生成</td></tr>';
+        tb.innerHTML = '<tr><td colspan="7" class="py-8 text-center" style="color: var(--text-muted);"><div class="mb-3">还没有 API Key，生成一个开始使用吧</div><button type="button" onclick="generateKey()" class="btn-primary text-sm px-3 py-1.5">+ 生成 API Key</button></td></tr>';
         document.getElementById('keysPagination').style.display = 'none';
         return;
       }}
@@ -3954,6 +4039,7 @@ def render_user_page(user) -> str:
     async function donateToken() {{
       const token = document.getElementById('donateToken').value.trim();
       if (!token) return showConfirmModal({{ title: '提示', message: '请输入 Token', icon: '💡', confirmText: '好的', danger: false }});
+      const hadTokens = userHasTokens;
       const visibility = document.getElementById('donateVisibility').value;
       const anonymous = document.getElementById('donateAnonymous').checked;
       const fd = new FormData();
@@ -3964,7 +4050,22 @@ def render_user_page(user) -> str:
         const r = await fetch('/user/api/tokens', {{ method: 'POST', body: fd }});
         const d = await r.json();
         if (d.success) {{
-          await showConfirmModal({{ title: '成功', message: visibility === 'public' ? 'Token 已添加到公开池，感谢您的贡献！' : 'Token 添加成功！', icon: '🎉', confirmText: '好的', danger: false }});
+          const isPublic = visibility === 'public';
+          let thanks = '感谢你的支持，Token 已添加成功。';
+          if (isPublic) {{
+            thanks = anonymous
+              ? '感谢你的公开贡献，Token 已以匿名方式加入公共池。'
+              : '感谢你的公开贡献，Token 已加入公共池并展示你的昵称。';
+          }} else if (!hadTokens) {{
+            thanks = '感谢你的支持，这是你的第一个 Token。';
+          }}
+          let nextStep = '你可以继续管理 Token 或生成 API Key。';
+          if (!hadTokens) {{
+            nextStep = '下一步可生成 API Key 或去测试。';
+          }} else if (isPublic) {{
+            nextStep = '你可以继续管理 Token 或查看公开池。';
+          }}
+          await showConfirmModal({{ title: '成功', message: `${{thanks}} ${{nextStep}}`, icon: '🎉', confirmText: '好的', danger: false }});
           hideDonateModal();
           document.getElementById('donateToken').value = '';
           loadTokens();
@@ -4159,7 +4260,7 @@ def render_user_page(user) -> str:
     function renderPublicTokenTable(tokens) {{
       const tb = document.getElementById('publicTokenTable');
       if (!tokens.length) {{
-        tb.innerHTML = '<tr><td colspan="6" class="py-6 text-center" style="color: var(--text-muted);">暂无公开 Token</td></tr>';
+        tb.innerHTML = `<tr><td colspan="6" class="py-8 text-center" style="color: var(--text-muted);"><div class="mb-3">暂无公开 Token，欢迎一起贡献</div><button type="button" onclick="showTokenSubTab('mine'); showDonateModal();" class="text-sm px-3 py-1.5 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">去添加 Token</button></td></tr>`;
         return;
       }}
       tb.innerHTML = tokens.map((t, i) => `
@@ -4206,6 +4307,7 @@ def render_user_page(user) -> str:
 
     showTab('tokens');
     showTokenSubTab('mine');
+    setGreeting();
     const keyNameInput = document.getElementById('keyNameInput');
     keyNameInput.addEventListener('keydown', (e) => {{
       if (e.key === 'Enter') handleKeyName(true);

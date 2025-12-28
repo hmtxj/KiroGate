@@ -1424,8 +1424,12 @@ async def oauth2_logout():
 # ==================== GitHub OAuth2 Routes ====================
 
 @router.get("/login", response_class=HTMLResponse, include_in_schema=False)
-async def login_page():
+async def login_page(request: Request):
     """Login selection page with multiple OAuth2 providers."""
+    user = get_current_user(request)
+    if user:
+        redirect_url = f"{_request_origin(request)}/user"
+        return RedirectResponse(url=redirect_url, status_code=303)
     from kiro_gateway.pages import render_login_page
     return HTMLResponse(content=render_login_page())
 
