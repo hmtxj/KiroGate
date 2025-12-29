@@ -6,12 +6,31 @@ KiroGate Frontend Pages.
 HTML templates for the web interface.
 """
 
-from kiro_gateway.config import APP_VERSION, AVAILABLE_MODELS
+from kiro_gateway.config import APP_VERSION, AVAILABLE_MODELS, STATIC_ASSETS_PROXY_ENABLED, STATIC_ASSETS_PROXY_BASE
 import html
 import json
 
-# Static assets proxy base
-PROXY_BASE = "https://proxy.jhun.edu.kg"
+
+def get_asset_url(cdn_url: str) -> str:
+    """
+    根据配置返回静态资源 URL。
+
+    Args:
+        cdn_url: 原始 CDN URL (例如: "cdn.tailwindcss.com" 或 "cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js")
+
+    Returns:
+        完整的资源 URL
+    """
+    if STATIC_ASSETS_PROXY_ENABLED:
+        # 使用代理
+        return f"{STATIC_ASSETS_PROXY_BASE}/proxy/{cdn_url}"
+    else:
+        # 直接访问 CDN
+        return f"https://{cdn_url}"
+
+
+# 兼容性：保留旧的 PROXY_BASE 变量名（已废弃，请使用 get_asset_url）
+PROXY_BASE = STATIC_ASSETS_PROXY_BASE if STATIC_ASSETS_PROXY_ENABLED else ""
 
 # SEO and common head
 COMMON_HEAD = f'''
@@ -42,9 +61,9 @@ COMMON_HEAD = f'''
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <script src="{PROXY_BASE}/proxy/cdn.tailwindcss.com"></script>
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="{get_asset_url("cdn.tailwindcss.com")}"></script>
+  <script src="{get_asset_url("cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js")}"></script>
+  <script src="{get_asset_url("cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js")}"></script>
   <style>
     :root {{
       --primary: #38bdf8;
@@ -620,7 +639,7 @@ COMMON_NAV = f'''
       </div>
     </div>
   </nav>
-  <div id="siteModeBanner" class="mode-banner">
+  <div id="siteModeBanner" class="mode-banner" style="display: none;">
     <div class="max-w-7xl mx-auto px-4 py-2 flex items-center gap-2">
       <span class="text-xs sm:text-sm" style="color: var(--text-muted);">当前模式：</span>
       <span id="siteModeText" class="mode-pill normal">正常运行</span>
@@ -655,7 +674,8 @@ COMMON_NAV = f'''
 
     (function() {{
       const modeEl = document.getElementById('siteModeText');
-      if (!modeEl) return;
+      const banner = document.getElementById('siteModeBanner');
+      if (!modeEl || !banner) return;
       fetch('/api/site-mode')
         .then(r => r.ok ? r.json() : null)
         .then(d => {{
@@ -664,6 +684,13 @@ COMMON_NAV = f'''
           modeEl.classList.remove('normal', 'self-use', 'maintenance');
           const cls = d.mode === 'self_use' ? 'self-use' : d.mode === 'maintenance' ? 'maintenance' : 'normal';
           modeEl.classList.add(cls);
+
+          // 只在非正常模式时显示横幅
+          if (d.mode === 'normal') {{
+            banner.style.display = 'none';
+          }} else {{
+            banner.style.display = 'block';
+          }}
         }})
         .catch(() => {{}});
     }})();
@@ -2003,7 +2030,7 @@ def render_swagger_page() -> str:
 <html lang="zh">
 <head>
   {COMMON_HEAD}
-  <link rel="stylesheet" href="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="{get_asset_url("cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css")}">
   <style>
     .swagger-ui .topbar {{ display: none; }}
     .swagger-ui .info .title {{ font-size: 2rem; }}
@@ -2022,7 +2049,7 @@ def render_swagger_page() -> str:
     <div id="swagger-ui"></div>
   </main>
   {COMMON_FOOTER}
-  <script src="{PROXY_BASE}/proxy/cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="{get_asset_url("cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js")}"></script>
   <script>
     window.onload = function() {{
       SwaggerUIBundle({{
@@ -2064,7 +2091,7 @@ def render_admin_login_page(error: str = "") -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Login - KiroGate</title>
   <meta name="robots" content="noindex, nofollow">
-  <script src="{PROXY_BASE}/proxy/cdn.tailwindcss.com"></script>
+  <script src="{get_asset_url("cdn.tailwindcss.com")}"></script>
   <style>
     :root {{ --bg-main: #f4f7fb; --bg-card: rgba(255, 255, 255, 0.82); --text: #0f172a; --text-muted: #64748b; --border: rgba(148, 163, 184, 0.35); --primary: #38bdf8; --bg-input: rgba(255, 255, 255, 0.9); }}
     .dark {{ --bg-main: #05070f; --bg-card: rgba(15, 23, 42, 0.8); --text: #e2e8f0; --text-muted: #94a3b8; --border: rgba(148, 163, 184, 0.2); --bg-input: rgba(15, 23, 42, 0.85); }}
@@ -4146,70 +4173,42 @@ def render_user_page(user) -> str:
   </main>
   <div id="donateModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" style="display: none;">
     <div class="card w-full max-w-md mx-4">
-      <h3 class="text-lg font-bold mb-4">🎁 添加 Refresh Token</h3>
+      <h3 class="text-lg font-bold mb-4">🎁 批量添加 Refresh Token</h3>
 
-      <!-- 模式选择 -->
-      <div class="flex gap-1 mb-4 p-1 rounded-lg" style="background: var(--bg-input);">
-        <button onclick="setDonateMode('private')" id="donateMode-private" class="donate-mode-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all active">🔐 个人使用</button>
-        <button onclick="setDonateMode('public')" id="donateMode-public" class="donate-mode-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all public-only">🌐 公开添加</button>
+      <!-- Token 输入区域 -->
+      <div class="mb-3">
+        <label class="text-sm font-medium mb-2 block">📝 粘贴 Token</label>
+        <textarea id="donateTokens" class="w-full h-32 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="支持以下格式：&#10;• 每行一个 Token&#10;• 逗号分隔：token1, token2, token3&#10;• 混合格式"></textarea>
+        <p class="text-xs mt-1" style="color: var(--text-muted);">💡 支持多行或逗号分隔，自动去除空行和重复项</p>
       </div>
 
-      <!-- 模式说明 -->
-      <div id="donateDesc-private" class="mb-4 p-3 rounded-lg text-sm" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3);">
-        <p class="font-medium text-indigo-400 mb-1">💡 个人使用模式</p>
-        <ul class="space-y-1" style="color: var(--text-muted);">
-          <li>• Token 仅供您自己使用</li>
-          <li>• 不会加入公共 Token 池</li>
-          <li>• 适合保护个人配额不被他人消耗</li>
-        </ul>
-      </div>
-      <div id="donateDesc-public" class="mb-4 p-3 rounded-lg text-sm public-only" style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); display: none;">
-        <p class="font-medium text-green-400 mb-1">🌍 公开添加模式</p>
-        <ul class="space-y-1" style="color: var(--text-muted);">
-          <li>• Token 加入公共池供所有用户共享</li>
-          <li>• 帮助社区其他成员使用服务</li>
-          <li>• 您仍可随时切换为私有或删除</li>
-        </ul>
+      <!-- 文件上传 -->
+      <div class="mb-4">
+        <label class="text-sm font-medium mb-2 block">📁 或上传 JSON 文件</label>
+        <input id="donateFile" type="file" accept=".json" class="w-full text-sm p-2 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);">
+        <p class="text-xs mt-1" style="color: var(--text-muted);">支持 Kiro Account Manager 导出的 JSON 文件</p>
       </div>
 
-      <textarea id="donateToken" class="w-full h-28 p-3 rounded-lg" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴你的 Refresh Token..."></textarea>
-
-      <div class="mt-4 p-3 rounded-lg" style="background: var(--bg-input); border: 1px dashed var(--border);">
-        <div class="flex items-center justify-between mb-2">
-          <span class="text-sm font-medium">📥 批量导入</span>
-          <button onclick="importTokens()" class="btn-primary text-sm">导入</button>
-        </div>
-        <div class="flex gap-1 mb-3 p-1 rounded-lg" style="background: var(--bg-input);">
-          <button onclick="setImportMode('file')" id="importMode-file" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all active">文件</button>
-          <button onclick="setImportMode('tokens')" id="importMode-tokens" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">复制</button>
-          <button onclick="setImportMode('json')" id="importMode-json" class="donate-mode-btn flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all">粘贴 JSON</button>
-        </div>
-        <input type="hidden" id="importMode" value="file">
-
-        <div id="importPanel-file">
-          <input id="donateImportFile" type="file" accept=".json" class="w-full text-sm">
-          <input id="donateImportPath" type="text" class="w-full mt-2 p-2 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="/Users/.../kiro-accounts-xxxx.json">
-          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 Kiro Account Manager 导出文件，仅读取 refreshToken 字段并逐个验证。路径导入仅支持项目目录内文件。</p>
-        </div>
-
-        <div id="importPanel-tokens" style="display: none;">
-          <textarea id="donateImportTokens" class="w-full h-24 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder="粘贴 refreshToken，每行一个或用逗号/空格分隔"></textarea>
-          <p class="text-xs mt-2" style="color: var(--text-muted);">示例：<code class="bg-black/20 px-1 rounded">aor... \\n aor...</code></p>
-        </div>
-
-        <div id="importPanel-json" style="display: none;">
-          <textarea id="donateImportJson" class="w-full h-28 p-3 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border);" placeholder='{"accounts":[{"credentials":{"refreshToken":"aor..."}}]}'></textarea>
-          <p class="text-xs mt-2" style="color: var(--text-muted);">支持 JSON 字符串/数组/对象，仅识别 refreshToken 字段：<code class="bg-black/20 px-1 rounded">["aor...","aor..."]</code></p>
+      <!-- 可见性选择 -->
+      <div class="mb-3">
+        <label class="text-sm font-medium mb-2 block">🔒 可见性设置</label>
+        <div class="flex gap-2">
+          <button onclick="setDonateMode('private')" id="donateMode-private" class="donate-mode-btn flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all" style="background: var(--bg-input); border: 1px solid var(--border);">
+            🔐 私有
+          </button>
+          <button onclick="setDonateMode('public')" id="donateMode-public" class="donate-mode-btn flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all public-only" style="background: var(--bg-input); border: 1px solid var(--border);">
+            🌐 公开
+          </button>
         </div>
       </div>
 
       <!-- 匿名选项（仅公开模式显示） -->
-      <div id="anonymousOption" class="mt-3 p-3 rounded-lg public-only" style="background: var(--bg-input); display: none;">
-        <label class="flex items-center gap-3 cursor-pointer">
+      <div id="anonymousOption" class="mb-4 p-3 rounded-lg public-only" style="background: var(--bg-input); border: 1px solid var(--border); display: none;">
+        <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" id="donateAnonymous" class="w-4 h-4 rounded">
-          <div>
-            <span class="font-medium">匿名添加</span>
-            <p class="text-xs mt-0.5" style="color: var(--text-muted);">勾选后其他用户将看不到您的用户名</p>
+          <div class="text-sm">
+            <span class="font-medium">匿名贡献</span>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted);">不显示您的用户名</p>
           </div>
         </label>
       </div>
@@ -4218,7 +4217,7 @@ def render_user_page(user) -> str:
 
       <div class="flex justify-end gap-2 mt-4">
         <button onclick="hideDonateModal()" class="px-4 py-2 rounded-lg" style="background: var(--bg-input);">取消</button>
-        <button onclick="donateToken()" class="btn-primary">提交</button>
+        <button onclick="submitTokens()" class="btn-primary">提交并导入</button>
       </div>
     </div>
   </div>
@@ -4343,7 +4342,7 @@ def render_user_page(user) -> str:
     let confirmCallback = null;
     let keyNameCallback = null;
     let userHasTokens = false;
-    const SELF_USE_MODE = {str(self_use_enabled).lower()};
+    const SELF_USE_MODE = __SELF_USE_MODE__;
 
     // Token 表格状态
     let allTokens = [];
@@ -5006,56 +5005,31 @@ def render_user_page(user) -> str:
       document.getElementById('donateModal').style.display = 'flex';
       if (SELF_USE_MODE) setDonateMode('private');
     }}
+
     function hideDonateModal() {{
       document.getElementById('donateModal').style.display = 'none';
       setDonateMode('private');
-      setImportMode('file');
-      document.getElementById('donateToken').value = '';
+      document.getElementById('donateTokens').value = '';
+      document.getElementById('donateFile').value = '';
       document.getElementById('donateAnonymous').checked = false;
-      const importFile = document.getElementById('donateImportFile');
-      if (importFile) importFile.value = '';
-      const importPath = document.getElementById('donateImportPath');
-      if (importPath) importPath.value = '';
-      const importTokens = document.getElementById('donateImportTokens');
-      if (importTokens) importTokens.value = '';
-      const importJson = document.getElementById('donateImportJson');
-      if (importJson) importJson.value = '';
     }}
 
     function setDonateMode(mode) {{
       if (SELF_USE_MODE && mode === 'public') mode = 'private';
       const privateBtn = document.getElementById('donateMode-private');
       const publicBtn = document.getElementById('donateMode-public');
-      const privateDesc = document.getElementById('donateDesc-private');
-      const publicDesc = document.getElementById('donateDesc-public');
       const anonOption = document.getElementById('anonymousOption');
 
       if (mode === 'private') {{
         privateBtn.classList.add('active');
         if (publicBtn) publicBtn.classList.remove('active');
-        privateDesc.style.display = 'block';
-        if (publicDesc) publicDesc.style.display = 'none';
         anonOption.style.display = 'none';
       }} else {{
         privateBtn.classList.remove('active');
         if (publicBtn) publicBtn.classList.add('active');
-        privateDesc.style.display = 'none';
-        if (publicDesc) publicDesc.style.display = 'block';
         anonOption.style.display = 'block';
       }}
       document.getElementById('donateVisibility').value = mode;
-    }}
-
-    function setImportMode(mode) {{
-      const modes = ['file', 'tokens', 'json'];
-      modes.forEach(m => {{
-        const btn = document.getElementById('importMode-' + m);
-        const panel = document.getElementById('importPanel-' + m);
-        if (btn) btn.classList.toggle('active', m === mode);
-        if (panel) panel.style.display = m === mode ? 'block' : 'none';
-      }});
-      const modeInput = document.getElementById('importMode');
-      if (modeInput) modeInput.value = mode;
     }}
 
     function showKeyModal(key, usePublicPool) {{
@@ -5093,105 +5067,78 @@ def render_user_page(user) -> str:
       }}
     }}
 
-    async function donateToken() {{
-      const token = document.getElementById('donateToken').value.trim();
-      if (!token) return showConfirmModal({{ title: '提示', message: '请输入 Token', icon: '💡', confirmText: '好的', danger: false }});
-      const hadTokens = userHasTokens;
-      const visibility = document.getElementById('donateVisibility').value;
-      if (SELF_USE_MODE && visibility === 'public') {{
-        return showConfirmModal({{ title: '提示', message: '自用模式下禁止公开 Token，请选择个人使用。', icon: '🔒', confirmText: '好的', danger: false }});
-      }}
-      const anonymous = document.getElementById('donateAnonymous').checked;
-      const fd = new FormData();
-      fd.append('refresh_token', token);
-      fd.append('visibility', visibility);
-      if (visibility === 'public' && anonymous) fd.append('anonymous', 'true');
-      try {{
-        const r = await fetch('/user/api/tokens', {{ method: 'POST', body: fd }});
-        const d = await r.json();
-        if (d.success) {{
-          const isPublic = visibility === 'public';
-          let thanks = '感谢你的支持，Token 已添加成功。';
-          if (isPublic) {{
-            thanks = anonymous
-              ? '感谢你的公开贡献，Token 已以匿名方式加入公共池。'
-              : '感谢你的公开贡献，Token 已加入公共池并展示你的昵称。';
-          }} else if (!hadTokens) {{
-            thanks = '感谢你的支持，这是你的第一个 Token。';
-          }}
-          let nextStep = '你可以继续管理 Token 或生成 API Key。';
-          if (!hadTokens) {{
-            nextStep = '下一步可生成 API Key 或去测试。';
-          }} else if (isPublic) {{
-            nextStep = '你可以继续管理 Token 或查看公开池。';
-          }}
-          await showConfirmModal({{ title: '成功', message: `${{thanks}} ${{nextStep}}`, icon: '🎉', confirmText: '好的', danger: false }});
-          hideDonateModal();
-          document.getElementById('donateToken').value = '';
-          loadTokens();
-          loadProfile();
-        }} else {{
-          showConfirmModal({{ title: '失败', message: d.error || d.message || '添加失败', icon: '❌', confirmText: '好的', danger: false }});
-        }}
-      }} catch (e) {{
-        showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});
-      }}
-    }}
-
-    async function importTokens() {{
-      const mode = document.getElementById('importMode')?.value || 'file';
-      const fileInput = document.getElementById('donateImportFile');
+    async function submitTokens() {{
+      // 获取输入
+      const tokensText = document.getElementById('donateTokens').value.trim();
+      const fileInput = document.getElementById('donateFile');
       const file = fileInput?.files?.[0] || null;
-      const pathInput = document.getElementById('donateImportPath');
-      const filePath = pathInput?.value?.trim() || '';
-      const tokensInput = document.getElementById('donateImportTokens');
-      const tokensText = tokensInput?.value?.trim() || '';
-      const jsonInput = document.getElementById('donateImportJson');
-      const jsonText = jsonInput?.value?.trim() || '';
-      if (mode === 'file' && !file && !filePath) {{
-        return showConfirmModal({{ title: '提示', message: '请上传 JSON 文件或填写文件路径', icon: '💡', confirmText: '好的', danger: false }});
-      }}
-      if (mode === 'tokens' && !tokensText) {{
-        return showConfirmModal({{ title: '提示', message: '请粘贴 refreshToken 列表', icon: '💡', confirmText: '好的', danger: false }});
-      }}
-      if (mode === 'json' && !jsonText) {{
-        return showConfirmModal({{ title: '提示', message: '请粘贴 JSON 内容', icon: '💡', confirmText: '好的', danger: false }});
+
+      // 验证至少有一个输入
+      if (!tokensText && !file) {{
+        return showConfirmModal({{
+          title: '提示',
+          message: '请粘贴 Token 或上传 JSON 文件',
+          icon: '💡',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
 
+      // 获取设置
       const visibility = document.getElementById('donateVisibility').value;
       if (SELF_USE_MODE && visibility === 'public') {{
-        return showConfirmModal({{ title: '提示', message: '自用模式下禁止公开 Token，请选择个人使用。', icon: '🔒', confirmText: '好的', danger: false }});
+        return showConfirmModal({{
+          title: '提示',
+          message: '自用模式下禁止公开 Token，请选择个人使用。',
+          icon: '🔒',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
       const anonymous = document.getElementById('donateAnonymous').checked;
 
+      // 构建请求
       const fd = new FormData();
-      if (mode === 'file') {{
-        if (file) {{
-          fd.append('file', file);
-        }} else {{
-          fd.append('file_path', filePath);
-        }}
-      }} else if (mode === 'tokens') {{
-        fd.append('tokens_text', tokensText);
+      if (file) {{
+        fd.append('file', file);
       }} else {{
-        fd.append('json_text', jsonText);
+        fd.append('tokens_text', tokensText);
       }}
       fd.append('visibility', visibility);
       if (visibility === 'public' && anonymous) fd.append('anonymous', 'true');
 
+      // 提交
       try {{
         const r = await fetch('/user/api/tokens/import', {{ method: 'POST', body: fd }});
         const d = await r.json();
         if (r.ok && d.success) {{
-          await showConfirmModal({{ title: '导入完成', message: d.message || '导入成功', icon: '🎉', confirmText: '好的', danger: false }});
+          await showConfirmModal({{
+            title: '导入完成',
+            message: d.message || '导入成功',
+            icon: '🎉',
+            confirmText: '好的',
+            danger: false
+          }});
           hideDonateModal();
           loadTokens();
           loadProfile();
         }} else {{
-          showConfirmModal({{ title: '导入失败', message: d.error || d.message || '导入失败', icon: '❌', confirmText: '好的', danger: false }});
+          showConfirmModal({{
+            title: '导入失败',
+            message: d.error || d.message || '导入失败',
+            icon: '❌',
+            confirmText: '好的',
+            danger: false
+          }});
         }}
       }} catch (e) {{
-        showConfirmModal({{ title: '错误', message: '请求失败，请稍后重试', icon: '❌', confirmText: '好的', danger: false }});
+        showConfirmModal({{
+          title: '错误',
+          message: '请求失败，请稍后重试',
+          icon: '❌',
+          confirmText: '好的',
+          danger: false
+        }});
       }}
     }}
 
@@ -5482,6 +5429,7 @@ def render_user_page(user) -> str:
         "__DISPLAY_NAME__": display_name,
         "__USER_INFO_HTML__": user_info_html,
         "__COMMON_FOOTER__": COMMON_FOOTER,
+        "__SELF_USE_MODE__": str(self_use_enabled).lower(),
     }
     for placeholder, value in replacements.items():
         page_template = page_template.replace(placeholder, value)

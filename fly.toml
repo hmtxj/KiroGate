@@ -23,6 +23,17 @@ primary_region = "nrt"
 
   processes = ["app"]
 
+  # HTTP 超时配置（支持长时间 AI 推理，单位：秒）
+  [http_service.http_options]
+    # 响应超时：10 分钟（适配 opus-4-5 等慢模型）
+    response.header.timeout = 600
+    # 空闲读取超时：10 分钟（流式输出）
+    read_timeout = 600
+    # 空闲写入超时：1 分钟
+    write_timeout = 60
+    # 连接空闲超时：10 分钟
+    idle_timeout = 600
+
 [[mounts]]
   source = "kirogate_data"
   destination = "/app/data"

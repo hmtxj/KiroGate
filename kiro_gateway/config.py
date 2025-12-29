@@ -285,6 +285,10 @@ class Settings(BaseSettings):
     # Token 最低成功率阈值
     token_min_success_rate: float = Field(default=0.7, alias="TOKEN_MIN_SUCCESS_RATE")
 
+    # 静态资源代理配置
+    static_assets_proxy_enabled: bool = Field(default=True, alias="STATIC_ASSETS_PROXY_ENABLED")
+    static_assets_proxy_base: str = Field(default="https://proxy.jhun.edu.kg", alias="STATIC_ASSETS_PROXY_BASE")
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -366,6 +370,8 @@ USER_SESSION_MAX_AGE: int = settings.user_session_max_age
 TOKEN_ENCRYPT_KEY: str = settings.token_encrypt_key
 TOKEN_HEALTH_CHECK_INTERVAL: int = settings.token_health_check_interval
 TOKEN_MIN_SUCCESS_RATE: float = settings.token_min_success_rate
+STATIC_ASSETS_PROXY_ENABLED: bool = settings.static_assets_proxy_enabled
+STATIC_ASSETS_PROXY_BASE: str = settings.static_assets_proxy_base
 
 # OAuth2 LinuxDo endpoints
 OAUTH_AUTHORIZATION_URL: str = "https://connect.linux.do/oauth2/authorize"

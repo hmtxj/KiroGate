@@ -115,6 +115,40 @@ def setup_logging_intercept():
 setup_logging_intercept()
 
 
+# --- 启动 Banner ---
+def _print_startup_banner():
+    """打印启动成功后的 ASCII art logo 和项目信息。"""
+    banner = """
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║     _  ___           ____       _                             ║
+║    | |/ (_)_ __ ___/ ___| __ _| |_ ___                       ║
+║    | ' /| | '__/ _ \\ |  _ / _` | __/ _ \\                      ║
+║    | . \\| | | | (_) | |_| | (_| | ||  __/                     ║
+║    |_|\\_\\_|_|  \\___/ \\____|\\__,_|\\__\\___|                     ║
+║                                                               ║
+║                  OpenAI & Anthropic Gateway                   ║
+║                       Version 2.1.0                           ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+"""
+
+    # 使用普通 print，因为这是美化输出，不需要记录到日志文件
+    print(banner)
+
+    # 输出项目地址信息
+    logger.info("=" * 60)
+    logger.info("🚀 KiroGate 启动成功!")
+    logger.info("=" * 60)
+    logger.info("📍 项目地址:")
+    logger.info(f"   • 本地访问: http://127.0.0.1:8000")
+    logger.info(f"   • 网络访问: http://0.0.0.0:8000")
+    logger.info("📖 API 文档:")
+    logger.info(f"   • Swagger UI: http://127.0.0.1:8000/docs")
+    logger.info(f"   • Admin 面板: http://127.0.0.1:8000/admin")
+    logger.info("=" * 60)
+
+
 # --- 配置验证 ---
 def validate_configuration() -> None:
     """
@@ -236,6 +270,9 @@ async def lifespan(app: FastAPI):
         logger.warning("Simple mode authentication will not work, only multi-tenant mode available")
 
     logger.info("Application startup complete.")
+
+    # 显示启动 banner
+    _print_startup_banner()
 
     # Start token health checker (for user token pool)
     from kiro_gateway.health_checker import health_checker
