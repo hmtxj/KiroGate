@@ -2686,23 +2686,36 @@ def render_admin_page() -> str:
 
         <div class="card">
           <h2 class="text-lg font-semibold mb-4">💾 数据导入导出</h2>
-          <div class="space-y-3">
-            <button onclick="exportDatabase()" class="w-full btn btn-primary flex items-center justify-center gap-2">
-              <span>⬇️</span> 导出数据库备份
-            </button>
-            <div class="flex flex-col gap-2">
-              <select id="dbImportType" class="w-full rounded px-3 py-2 text-sm"
+          <div class="space-y-4">
+            <div class="space-y-2">
+              <div class="text-sm font-medium">导出选择（支持单选/多选）</div>
+              <select id="dbExportSelect" multiple size="2" class="w-full rounded px-3 py-2 text-sm"
                 style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
-                <option value="all" selected>导入全量备份（zip）</option>
-                <option value="users">仅用户数据库</option>
-                <option value="metrics">仅统计数据库</option>
+                <option value="users">用户数据库（加载中）</option>
+                <option value="metrics">统计数据库（加载中）</option>
               </select>
+              <div class="flex flex-wrap items-center gap-2">
+                <button onclick="selectAllDbOptions('dbExportSelect', true)" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">全选</button>
+                <button onclick="selectAllDbOptions('dbExportSelect', false)" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">清空</button>
+                <button onclick="exportDatabase()" class="btn btn-primary">导出所选（zip）</button>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="text-sm font-medium">导入（先解析再确认）</div>
               <input id="dbImportFile" type="file" accept=".zip,.db" class="w-full rounded px-3 py-2 text-sm"
                 style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
-              <button onclick="importDatabase()" class="w-full btn flex items-center justify-center gap-2"
-                style="background: var(--bg-input); border: 1px solid var(--border);">
-                <span>⬆️</span> 导入数据库
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button onclick="previewDatabaseImport()" class="btn"
+                  style="background: var(--bg-input); border: 1px solid var(--border);">解析文件</button>
+                <button id="dbImportConfirmBtn" onclick="confirmDatabaseImport()" class="btn btn-primary" disabled>确认导入</button>
+              </div>
+              <select id="dbImportSelect" multiple size="2" class="w-full rounded px-3 py-2 text-sm"
+                style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
+                <option disabled>请先解析导出文件</option>
+              </select>
+              <p id="dbImportStatus" class="text-xs" style="color: var(--text-muted);">导入前会校验数据库结构。</p>
             </div>
             <p class="text-xs" style="color: var(--text-muted);">导入会覆盖现有数据，建议先导出备份；完成后请重启服务以加载最新数据。</p>
           </div>
@@ -2851,28 +2864,146 @@ def render_admin_page() -> str:
       }}
     }}
 
-    function exportDatabase() {{
-      window.location.href = '/admin/api/db/export';
+    let dbImportToken = null;
+
+    function formatBytes(bytes) {{
+      const value = Number(bytes);
+      if (!Number.isFinite(value)) return '-';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = value;
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {{
+        size /= 1024;
+        idx += 1;
+      }}
+      const digits = idx === 0 ? 0 : (size >= 10 ? 0 : 1);
+      return `${{size.toFixed(digits)}} ${{units[idx]}}`;
     }}
 
-    async function importDatabase() {{
+    function setDbSelectOptions(selectId, items, autoSelectAll = false) {{
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      select.innerHTML = '';
+      items.forEach(item => {{
+        const option = document.createElement('option');
+        option.value = item.key;
+        const sizeText = item.exists === false ? '不存在' : formatBytes(item.size_bytes);
+        option.textContent = `${{item.label}}（${{sizeText}}）`;
+        option.disabled = item.exists === false;
+        option.selected = autoSelectAll && !option.disabled;
+        select.appendChild(option);
+      }});
+      if (!items.length) {{
+        const option = document.createElement('option');
+        option.textContent = '暂无可选项';
+        option.disabled = true;
+        select.appendChild(option);
+      }}
+    }}
+
+    function selectAllDbOptions(selectId, enabled) {{
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      Array.from(select.options).forEach(option => {{
+        if (!option.disabled) option.selected = !!enabled;
+      }});
+    }}
+
+    function getSelectedDbOptions(selectId) {{
+      const select = document.getElementById(selectId);
+      if (!select) return [];
+      return Array.from(select.selectedOptions).map(option => option.value).filter(Boolean);
+    }}
+
+    function getSelectedDbLabels(selectId) {{
+      const select = document.getElementById(selectId);
+      if (!select) return [];
+      return Array.from(select.selectedOptions).map(option => {{
+        const text = option.textContent || '';
+        return text.split('（')[0] || text;
+      }});
+    }}
+
+    function resetDbImportState(message) {{
+      dbImportToken = null;
+      setDbSelectOptions('dbImportSelect', [], false);
+      const status = document.getElementById('dbImportStatus');
+      if (status) status.textContent = message || '请先解析导出文件。';
+      const btn = document.getElementById('dbImportConfirmBtn');
+      if (btn) btn.disabled = true;
+    }}
+
+    async function loadDbInfo() {{
+      try {{
+        const d = await fetchJson('/admin/api/db/info');
+        const items = Array.isArray(d.items) ? d.items : [];
+        setDbSelectOptions('dbExportSelect', items, false);
+      }} catch (e) {{
+        setDbSelectOptions('dbExportSelect', [
+          {{ key: 'users', label: '用户数据库', size_bytes: null, exists: true }},
+          {{ key: 'metrics', label: '统计数据库', size_bytes: null, exists: true }},
+        ], false);
+      }}
+    }}
+
+    function exportDatabase() {{
+      const selected = getSelectedDbOptions('dbExportSelect');
+      if (!selected.length) {{
+        alert('请选择要导出的数据库');
+        return;
+      }}
+      const qs = new URLSearchParams();
+      qs.set('db_types', selected.join(','));
+      window.location.href = `/admin/api/db/export?${{qs.toString()}}`;
+    }}
+
+    async function previewDatabaseImport() {{
       const input = document.getElementById('dbImportFile');
       if (!input || !input.files || !input.files.length) {{
         alert('请选择要导入的文件');
         return;
       }}
-      const dbType = document.getElementById('dbImportType')?.value || 'all';
-      if (!confirm('导入会覆盖现有数据库，确定继续吗？')) return;
       const fd = new FormData();
       fd.append('file', input.files[0]);
-      fd.append('db_type', dbType);
       try {{
-        const d = await fetchJson('/admin/api/db/import', {{ method: 'POST', body: fd }});
+        const d = await fetchJson('/admin/api/db/import/preview', {{ method: 'POST', body: fd }});
+        dbImportToken = d.token || null;
+        const items = Array.isArray(d.items) ? d.items : [];
+        setDbSelectOptions('dbImportSelect', items, true);
+        const status = document.getElementById('dbImportStatus');
+        if (status) status.textContent = d.message || '解析完成，请选择需要导入的数据库。';
+        const btn = document.getElementById('dbImportConfirmBtn');
+        if (btn) btn.disabled = !dbImportToken || items.length === 0;
+      }} catch (e) {{
+        resetDbImportState(e.error || '解析失败');
+        alert(e.error || '解析失败');
+      }}
+    }}
+
+    async function confirmDatabaseImport() {{
+      const selected = getSelectedDbOptions('dbImportSelect');
+      if (!dbImportToken) {{
+        alert('请先解析导入文件');
+        return;
+      }}
+      if (!selected.length) {{
+        alert('请选择要导入的数据库');
+        return;
+      }}
+      const labels = getSelectedDbLabels('dbImportSelect').join('、');
+      if (!confirm(`确定导入：${{labels}} 吗？此操作会覆盖现有数据。`)) return;
+      const fd = new FormData();
+      fd.append('token', dbImportToken);
+      fd.append('db_types', selected.join(','));
+      try {{
+        const d = await fetchJson('/admin/api/db/import/confirm', {{ method: 'POST', body: fd }});
         alert(d.message || '导入完成');
+        const input = document.getElementById('dbImportFile');
+        if (input) input.value = '';
+        resetDbImportState('导入完成，请在需要时重新解析文件。');
+        loadDbInfo();
       }} catch (e) {{
         alert(e.error || '导入失败');
-      }} finally {{
-        input.value = '';
       }}
     }}
 
@@ -3898,6 +4029,14 @@ def render_admin_page() -> str:
     refreshStats();
     refreshAnnouncement();
     refreshProxyApiKey();
+    loadDbInfo();
+    resetDbImportState('请先上传并解析导出文件。');
+    const dbImportFile = document.getElementById('dbImportFile');
+    if (dbImportFile) {{
+      dbImportFile.addEventListener('change', () => {{
+        resetDbImportState('已选择新文件，请先解析。');
+      }});
+    }}
     setInterval(refreshStats, 10000);
 
     // Theme management
