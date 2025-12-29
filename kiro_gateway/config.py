@@ -515,8 +515,20 @@ def get_internal_model_id(external_model: str) -> str:
 
     Returns:
         Kiro API internal model ID
+
+    Raises:
+        ValueError: If model is not supported
     """
-    return MODEL_MAPPING.get(external_model, external_model)
+    if external_model in MODEL_MAPPING:
+        return MODEL_MAPPING[external_model]
+
+    # 检查是否是有效的内部模型 ID（直接传递）
+    valid_internal_ids = set(MODEL_MAPPING.values())
+    if external_model in valid_internal_ids:
+        return external_model
+
+    available = ", ".join(sorted(AVAILABLE_MODELS))
+    raise ValueError(f"不支持的模型: {external_model}。可用模型: {available}")
 
 
 def get_adaptive_timeout(model: str, base_timeout: float) -> float:
