@@ -61,9 +61,9 @@ COMMON_HEAD = r'''
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <script src="{get_asset_url("cdn.tailwindcss.com")}"></script>
-  <script src="{get_asset_url("cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js")}"></script>
-  <script src="{get_asset_url("cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js")}"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     :root {{
       --primary: #38bdf8;
@@ -945,11 +945,11 @@ def render_home_page() -> str:
 
   <script>
     // 等待 echarts 加载完成
-    function initModelsChart() {
-      if (typeof echarts === 'undefined') {
+    function initModelsChart() {{
+      if (typeof echarts === 'undefined') {{
         setTimeout(initModelsChart, 100);
         return;
-      }
+      }}
       const modelsChart = echarts.init(document.getElementById('modelsChart'));
       const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
       modelsChart.setOption({{
@@ -996,14 +996,14 @@ def render_home_page() -> str:
       }}]
     }});
     window.addEventListener('resize', () => modelsChart.resize());
-    }
+    }}
 
     // 页面加载完成后初始化图表
-    if (document.readyState === 'loading') {
+    if (document.readyState === 'loading') {{
       document.addEventListener('DOMContentLoaded', initModelsChart);
-    } else {
+    }} else {{
       initModelsChart();
-    }
+    }}
   </script>
 </body>
 </html>'''
