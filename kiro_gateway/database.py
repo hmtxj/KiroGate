@@ -222,6 +222,15 @@ class UserDatabase:
                 conn.execute(
                     "ALTER TABLE tokens ADD COLUMN is_anonymous INTEGER DEFAULT 0"
                 )
+            # Add client_id and client_secret columns for AWS SSO OIDC tokens (Kiro Account Manager)
+            if "client_id_encrypted" not in columns:
+                conn.execute(
+                    "ALTER TABLE tokens ADD COLUMN client_id_encrypted TEXT"
+                )
+            if "client_secret_encrypted" not in columns:
+                conn.execute(
+                    "ALTER TABLE tokens ADD COLUMN client_secret_encrypted TEXT"
+                )
             announcement_columns = {row[1] for row in conn.execute("PRAGMA table_info(announcements)")}
             if "allow_guest" not in announcement_columns:
                 conn.execute(
@@ -640,10 +649,20 @@ class UserDatabase:
         user_id: int,
         refresh_token: str,
         visibility: str = "private",
-        anonymous: bool = False
+        anonymous: bool = False,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None
     ) -> Tuple[bool, str]:
         """
         Donate a refresh token.
+
+        Args:
+            user_id: User ID
+            refresh_token: Kiro refresh token
+            visibility: 'public' or 'private'
+            anonymous: Whether to hide username for public tokens
+            client_id: AWS SSO OIDC client ID (for Kiro Account Manager tokens)
+            client_secret: AWS SSO OIDC client secret (for Kiro Account Manager tokens)
 
         Returns:
             (success, message) tuple
@@ -652,6 +671,10 @@ class UserDatabase:
         encrypted = self._encrypt_token(refresh_token)
         now = int(time.time() * 1000)
         is_anonymous = 1 if visibility == "public" and anonymous else 0
+
+        # Encrypt client credentials if provided
+        client_id_enc = self._encrypt_token(client_id) if client_id else None
+        client_secret_enc = self._encrypt_token(client_secret) if client_secret else None
 
         with self._lock:
             with self._get_conn() as conn:
@@ -664,9 +687,11 @@ class UserDatabase:
 
                 conn.execute(
                     """INSERT INTO tokens
-                       (user_id, refresh_token_encrypted, token_hash, visibility, is_anonymous, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (user_id, encrypted, token_hash, visibility, is_anonymous, now)
+                       (user_id, refresh_token_encrypted, token_hash, visibility, is_anonymous,
+                        client_id_encrypted, client_secret_encrypted, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, encrypted, token_hash, visibility, is_anonymous,
+                     client_id_enc, client_secret_enc, now)
                 )
                 return True, "Token 添加成功"
 
@@ -785,6 +810,28 @@ class UserDatabase:
             if row:
                 return self._decrypt_token(row[0])
             return None
+
+    def get_token_credentials(self, token_id: int) -> Optional[Dict[str, Optional[str]]]:
+        """
+        Get decrypted token credentials including client_id and client_secret.
+
+        Returns:
+            Dict with 'refresh_token', 'client_id', 'client_secret' keys, or None if not found
+        """
+        with self._get_conn() as conn:
+            row = conn.execute(
+                """SELECT refresh_token_encrypted, client_id_encrypted, client_secret_encrypted
+                   FROM tokens WHERE id = ?""", (token_id,)
+            ).fetchone()
+            if not row:
+                return None
+
+            result = {
+                'refresh_token': self._decrypt_token(row[0]) if row[0] else None,
+                'client_id': self._decrypt_token(row[1]) if row[1] else None,
+                'client_secret': self._decrypt_token(row[2]) if row[2] else None,
+            }
+            return result
 
     def set_token_visibility(self, token_id: int, visibility: str) -> bool:
         """Set token visibility (public/private)."""
