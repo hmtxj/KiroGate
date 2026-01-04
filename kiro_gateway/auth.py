@@ -72,6 +72,8 @@ class KiroAuthManager:
     def __init__(
         self,
         refresh_token: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
         profile_arn: Optional[str] = None,
         region: str = "us-east-1",
         creds_file: Optional[str] = None
@@ -81,11 +83,15 @@ class KiroAuthManager:
 
         Args:
             refresh_token: Refresh token for obtaining access token
+            client_id: OIDC client ID (for Kiro Account Manager tokens)
+            client_secret: OIDC client secret (for Kiro Account Manager tokens)
             profile_arn: AWS CodeWhisperer profile ARN
             region: AWS region (default us-east-1)
             creds_file: Path to JSON credentials file (optional)
         """
         self._refresh_token = refresh_token
+        self._client_id = client_id
+        self._client_secret = client_secret
         self._profile_arn = profile_arn
         self._region = region
         self._creds_file = creds_file
@@ -143,10 +149,44 @@ class KiroAuthManager:
                     data = json.load(f)
                 logger.info(f"Credentials loaded from file: {file_path}")
 
+            # Handle list of credentials (e.g. from Kiro Account Manager)
+            # Case 1: Root list
+            if isinstance(data, list) and len(data) > 0:
+                logger.info(f"Credentials file contains {len(data)} accounts (list), using the first one.")
+                data = data[0]
+            elif isinstance(data, list) and len(data) == 0:
+                logger.warning("Credentials list is empty")
+                return
+            
+            # Case 2: Object with "accounts" list (Kiro Account Manager export)
+            if isinstance(data, dict) and 'accounts' in data and isinstance(data['accounts'], list):
+                 if len(data['accounts']) > 0:
+                     logger.info(f"Credentials file contains {len(data['accounts'])} accounts (export object), using the first one.")
+                     data = data['accounts'][0]
+                 else:
+                     logger.warning("Credentials 'accounts' list is empty")
+                     return
+
+                     logger.warning("Credentials 'accounts' list is empty")
+                     return
+            
+            logger.info(f"Loaded account keys: {list(data.keys())}")
+            
+            # Helper to extract from nested credentials
+            if 'credentials' in data and isinstance(data['credentials'], dict):
+                data = data['credentials']  # Use nested credentials as data source
+            
             if 'refreshToken' in data:
                 self._refresh_token = data['refreshToken']
+            else:
+                logger.warning("refreshToken key NOT found in account data!")
+
             if 'accessToken' in data:
                 self._access_token = data['accessToken']
+            if 'clientId' in data:
+                self._client_id = data['clientId']
+            if 'clientSecret' in data:
+                self._client_secret = data['clientSecret']
             if 'profileArn' in data:
                 self._profile_arn = data['profileArn']
             if 'region' in data:
@@ -156,14 +196,20 @@ class KiroAuthManager:
                 self._api_host = get_kiro_api_host(self._region)
                 self._q_host = get_kiro_q_host(self._region)
 
-            # Parse expiresAt
+            # Parse expiresAt - support both ISO string and Unix timestamp (ms)
             if 'expiresAt' in data:
                 try:
-                    expires_str = data['expiresAt']
-                    if expires_str.endswith('Z'):
-                        self._expires_at = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
-                    else:
-                        self._expires_at = datetime.fromisoformat(expires_str)
+                    expires_val = data['expiresAt']
+                    if isinstance(expires_val, (int, float)):
+                        # Unix timestamp in milliseconds
+                        if expires_val > 1e12:  # Likely milliseconds
+                            expires_val = expires_val / 1000
+                        self._expires_at = datetime.fromtimestamp(expires_val, tz=timezone.utc)
+                    elif isinstance(expires_val, str):
+                        if expires_val.endswith('Z'):
+                            self._expires_at = datetime.fromisoformat(expires_val.replace('Z', '+00:00'))
+                        else:
+                            self._expires_at = datetime.fromisoformat(expires_val)
                 except Exception as e:
                     logger.warning(f"Failed to parse expiresAt: {e}")
 
@@ -242,6 +288,7 @@ class KiroAuthManager:
         Execute token refresh request with exponential backoff retry.
 
         Sends POST request to Kiro API to obtain new access token.
+        Uses AWS SSO OIDC endpoint when clientId/clientSecret are present (Kiro Account Manager tokens).
         Updates internal state and saves credentials to file.
 
         Raises:
@@ -253,11 +300,33 @@ class KiroAuthManager:
 
         logger.info("Refreshing Kiro token...")
 
-        payload = {'refreshToken': self._refresh_token}
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": f"KiroGateway-{self._fingerprint[:16]}",
-        }
+        # Determine which endpoint and format to use based on clientId/clientSecret presence
+        if self._client_id and self._client_secret:
+            # AWS SSO OIDC endpoint (for Kiro Account Manager tokens)
+            # Uses camelCase parameters and JSON body
+            refresh_url = f"https://oidc.{self._region}.amazonaws.com/token"
+            payload = {
+                'grantType': 'refresh_token',
+                'clientId': self._client_id,
+                'clientSecret': self._client_secret,
+                'refreshToken': self._refresh_token,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": f"KiroGateway-{self._fingerprint[:16]}",
+            }
+            use_oidc = True
+            logger.debug(f"Using AWS SSO OIDC endpoint: {refresh_url}")
+        else:
+            # Kiro Desktop Auth endpoint (original behavior)
+            refresh_url = self._refresh_url
+            payload = {'refreshToken': self._refresh_token}
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": f"KiroGateway-{self._fingerprint[:16]}",
+            }
+            use_oidc = False
+            logger.debug(f"Using Kiro Desktop endpoint: {refresh_url}")
 
         # 指数退避重试配置
         max_retries = 3
@@ -267,7 +336,8 @@ class KiroAuthManager:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=30) as client:
-                    response = await client.post(self._refresh_url, json=payload, headers=headers)
+                    # Both endpoints use JSON
+                    response = await client.post(refresh_url, json=payload, headers=headers)
                     response.raise_for_status()
                     data = response.json()
                 break  # 成功，退出重试循环
@@ -297,9 +367,10 @@ class KiroAuthManager:
             logger.error(f"Token refresh failed after {max_retries} attempts")
             raise last_error
 
-        new_access_token = data.get("accessToken")
-        new_refresh_token = data.get("refreshToken")
-        expires_in = data.get("expiresIn", 3600)
+        # Parse response - handle both AWS OIDC (snake_case) and Kiro Desktop (camelCase)
+        new_access_token = data.get("accessToken") or data.get("access_token")
+        new_refresh_token = data.get("refreshToken") or data.get("refresh_token")
+        expires_in = data.get("expiresIn") or data.get("expires_in", 3600)
         new_profile_arn = data.get("profileArn")
 
         if not new_access_token:
