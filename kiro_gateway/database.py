@@ -65,11 +65,31 @@ class DonatedToken:
     last_used: Optional[int]
     last_check: Optional[int]
     created_at: int
+    # Account info fields
+    email: Optional[str] = None
+    idp: str = "BuilderId"
+    subscription_type: str = "Free"
+    subscription_title: Optional[str] = None
+    usage_current: float = 0.0
+    usage_limit: float = 0.0
+    base_current: float = 0.0
+    base_limit: float = 0.0
+    trial_current: float = 0.0
+    trial_limit: float = 0.0
+    trial_expiry: Optional[str] = None
+    next_reset: Optional[str] = None
+    days_remaining: Optional[int] = None
+    info_updated_at: Optional[int] = None
 
     @property
     def success_rate(self) -> float:
         total = self.success_count + self.fail_count
         return self.success_count / total if total > 0 else 1.0
+    
+    @property
+    def usage_percent(self) -> float:
+        """使用量百分比"""
+        return (self.usage_current / self.usage_limit * 100) if self.usage_limit > 0 else 0.0
 
 
 @dataclass
@@ -231,6 +251,35 @@ class UserDatabase:
                 conn.execute(
                     "ALTER TABLE tokens ADD COLUMN client_secret_encrypted TEXT"
                 )
+            # Add account info columns for detailed token display
+            if "email" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN email TEXT")
+            if "idp" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN idp TEXT DEFAULT 'BuilderId'")
+            if "subscription_type" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN subscription_type TEXT DEFAULT 'Free'")
+            if "subscription_title" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN subscription_title TEXT")
+            if "usage_current" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN usage_current REAL DEFAULT 0")
+            if "usage_limit" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN usage_limit REAL DEFAULT 0")
+            if "base_current" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN base_current REAL DEFAULT 0")
+            if "base_limit" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN base_limit REAL DEFAULT 0")
+            if "trial_current" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN trial_current REAL DEFAULT 0")
+            if "trial_limit" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN trial_limit REAL DEFAULT 0")
+            if "trial_expiry" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN trial_expiry TEXT")
+            if "next_reset" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN next_reset TEXT")
+            if "days_remaining" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN days_remaining INTEGER")
+            if "info_updated_at" not in columns:
+                conn.execute("ALTER TABLE tokens ADD COLUMN info_updated_at INTEGER")
             announcement_columns = {row[1] for row in conn.execute("PRAGMA table_info(announcements)")}
             if "allow_guest" not in announcement_columns:
                 conn.execute(
@@ -924,8 +973,112 @@ class UserDatabase:
                 active = conn.execute("SELECT COUNT(*) FROM tokens WHERE status = 'active'").fetchone()[0]
             return {"total": total, "public": public, "active": active}
 
+    def update_token_info(
+        self,
+        token_id: int,
+        email: Optional[str] = None,
+        idp: Optional[str] = None,
+        subscription_type: Optional[str] = None,
+        subscription_title: Optional[str] = None,
+        usage_current: Optional[float] = None,
+        usage_limit: Optional[float] = None,
+        base_current: Optional[float] = None,
+        base_limit: Optional[float] = None,
+        trial_current: Optional[float] = None,
+        trial_limit: Optional[float] = None,
+        trial_expiry: Optional[str] = None,
+        next_reset: Optional[str] = None,
+        days_remaining: Optional[int] = None
+    ) -> bool:
+        """
+        Update token account information.
+        
+        Args:
+            token_id: Token ID
+            email: Account email
+            idp: Identity provider (BuilderId, GitHub, Google)
+            subscription_type: Subscription type (Free, Pro, Enterprise, Teams)
+            subscription_title: Subscription title (KIRO FREE, etc.)
+            usage_current: Current usage
+            usage_limit: Usage limit
+            base_current: Base quota current usage
+            base_limit: Base quota limit
+            trial_current: Trial quota current usage
+            trial_limit: Trial quota limit
+            trial_expiry: Trial expiry date (YYYY-MM-DD)
+            next_reset: Next reset date (YYYY-MM-DD)
+            days_remaining: Days remaining until reset
+            
+        Returns:
+            True if update successful
+        """
+        now = int(time.time() * 1000)
+        
+        # Build UPDATE query dynamically based on provided fields
+        fields = []
+        values = []
+        
+        if email is not None:
+            fields.append("email = ?")
+            values.append(email)
+        if idp is not None:
+            fields.append("idp = ?")
+            values.append(idp)
+        if subscription_type is not None:
+            fields.append("subscription_type = ?")
+            values.append(subscription_type)
+        if subscription_title is not None:
+            fields.append("subscription_title = ?")
+            values.append(subscription_title)
+        if usage_current is not None:
+            fields.append("usage_current = ?")
+            values.append(usage_current)
+        if usage_limit is not None:
+            fields.append("usage_limit = ?")
+            values.append(usage_limit)
+        if base_current is not None:
+            fields.append("base_current = ?")
+            values.append(base_current)
+        if base_limit is not None:
+            fields.append("base_limit = ?")
+            values.append(base_limit)
+        if trial_current is not None:
+            fields.append("trial_current = ?")
+            values.append(trial_current)
+        if trial_limit is not None:
+            fields.append("trial_limit = ?")
+            values.append(trial_limit)
+        if trial_expiry is not None:
+            fields.append("trial_expiry = ?")
+            values.append(trial_expiry)
+        if next_reset is not None:
+            fields.append("next_reset = ?")
+            values.append(next_reset)
+        if days_remaining is not None:
+            fields.append("days_remaining = ?")
+            values.append(days_remaining)
+        
+        if not fields:
+            return False
+        
+        # Always update info_updated_at
+        fields.append("info_updated_at = ?")
+        values.append(now)
+        
+        values.append(token_id)
+        
+        sql = f"UPDATE tokens SET {', '.join(fields)} WHERE id = ?"
+        
+        with self._lock:
+            with self._get_conn() as conn:
+                conn.execute(sql, values)
+                conn.commit()
+                return True
+
     def _row_to_token(self, row: sqlite3.Row) -> DonatedToken:
         """Convert database row to DonatedToken object."""
+        # Get column names to check which fields exist
+        keys = row.keys() if hasattr(row, 'keys') else []
         return DonatedToken(
             id=row["id"],
             user_id=row["user_id"],
@@ -936,7 +1089,22 @@ class UserDatabase:
             fail_count=row["fail_count"],
             last_used=row["last_used"],
             last_check=row["last_check"],
-            created_at=row["created_at"]
+            created_at=row["created_at"],
+            # Account info fields (with defaults for backwards compatibility)
+            email=row["email"] if "email" in keys else None,
+            idp=row["idp"] if "idp" in keys else "BuilderId",
+            subscription_type=row["subscription_type"] if "subscription_type" in keys else "Free",
+            subscription_title=row["subscription_title"] if "subscription_title" in keys else None,
+            usage_current=row["usage_current"] if "usage_current" in keys else 0.0,
+            usage_limit=row["usage_limit"] if "usage_limit" in keys else 0.0,
+            base_current=row["base_current"] if "base_current" in keys else 0.0,
+            base_limit=row["base_limit"] if "base_limit" in keys else 0.0,
+            trial_current=row["trial_current"] if "trial_current" in keys else 0.0,
+            trial_limit=row["trial_limit"] if "trial_limit" in keys else 0.0,
+            trial_expiry=row["trial_expiry"] if "trial_expiry" in keys else None,
+            next_reset=row["next_reset"] if "next_reset" in keys else None,
+            days_remaining=row["days_remaining"] if "days_remaining" in keys else None,
+            info_updated_at=row["info_updated_at"] if "info_updated_at" in keys else None
         )
 
     # ==================== API Key Methods ====================
