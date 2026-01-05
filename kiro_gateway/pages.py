@@ -4273,16 +4273,18 @@ def render_user_page(user) -> str:
                   <th class="text-left py-3 px-3" style="width: 40px;">
                     <input type="checkbox" id="selectAllTokens" onchange="toggleAllTokens(this.checked)" class="cursor-pointer">
                   </th>
-                  <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('id')">ID ↕</th>
+                  <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('id')">ID/邮箱 ↕</th>
                   <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('visibility')">可见性 ↕</th>
                   <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('status')">状态 ↕</th>
+                  <th class="text-left py-3 px-3">套餐</th>
+                  <th class="text-left py-3 px-3">使用量</th>
+                  <th class="text-left py-3 px-3">剩余天数</th>
                   <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('success_rate')">成功率 ↕</th>
-                  <th class="text-left py-3 px-3 cursor-pointer hover:text-indigo-400" onclick="sortTokens('last_used')">最后使用 ↕</th>
                   <th class="text-left py-3 px-3">操作</th>
                 </tr>
               </thead>
               <tbody id="tokenTable">
-                <tr><td colspan="7" class="py-6 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+                <tr><td colspan="9" class="py-6 text-center" style="color: var(--text-muted);">加载中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -4857,7 +4859,7 @@ def render_user_page(user) -> str:
     function renderTokenTable(tokens) {{
       const tb = document.getElementById('tokenTable');
       if (!tokens || !tokens.length) {{
-        tb.innerHTML = '<tr><td colspan="7" class="py-8 text-center" style="color: var(--text-muted);"><div class="mb-3">还没有 Token，先添加一个吧</div><button type="button" onclick="showDonateModal()" class="btn-primary text-sm px-3 py-1.5">+ 添加 Token</button></td></tr>';
+        tb.innerHTML = '<tr><td colspan="9" class="py-8 text-center" style="color: var(--text-muted);"><div class="mb-3">还没有 Token，先添加一个吧</div><button type="button" onclick="showDonateModal()" class="btn-primary text-sm px-3 py-1.5">+ 添加 Token</button></td></tr>';
         document.getElementById('tokensPagination').style.display = 'none';
         document.getElementById('selectAllTokens').checked = false;
         return;
@@ -4867,21 +4869,88 @@ def render_user_page(user) -> str:
         const toggleTarget = t.visibility === 'public' ? 'private' : 'public';
         const toggleLabel = SELF_USE_MODE ? '设为私有' : '切换';
         const toggleBtn = canToggle
-          ? `<button onclick="toggleVisibility(${{t.id}}, '${{toggleTarget}}')" class="text-xs px-2 py-1 rounded bg-indigo-500/20 text-indigo-400 mr-1">${{toggleLabel}}</button>`
+          ? `<button onclick="toggleVisibility(${{t.id}}, '${{toggleTarget}}')" class="text-sm px-2 py-1 rounded bg-indigo-500/30 text-indigo-300 mr-1 font-medium">${{toggleLabel}}</button>`
           : '';
+        
+        // Subscription badge with icon and better styling
+        let subBadge = '';
+        if (t.subscription_title) {{
+          const subType = (t.subscription_type || 'Free').toLowerCase();
+          let badgeStyle, icon;
+          if (subType === 'pro') {{
+            badgeStyle = 'background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);';
+            icon = '⭐';
+          }} else if (subType === 'enterprise') {{
+            badgeStyle = 'background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3);';
+            icon = '👑';
+          }} else {{
+            badgeStyle = 'background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3);';
+            icon = '✨';
+          }}
+          subBadge = `<span class="text-sm px-2.5 py-1 rounded-md font-medium" style="${{badgeStyle}}">${{icon}} ${{t.subscription_title}}</span>`;
+        }}
+        
+        // Usage bar - wider and more visible
+        let usageHtml = '<span style="color: var(--text-muted);">-</span>';
+        if (t.usage_limit > 0) {{
+          const usagePct = Math.min(100, t.usage_percent || 0);
+          const barColor = usagePct > 80 ? '#ef4444' : usagePct > 50 ? '#f59e0b' : '#22c55e';
+          const barBg = usagePct > 80 ? 'rgba(239, 68, 68, 0.15)' : usagePct > 50 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(34, 197, 94, 0.15)';
+          usageHtml = `
+            <div class="flex items-center gap-2">
+              <div style="width: 80px; height: 8px; background: ${{barBg}}; border-radius: 4px; overflow: hidden;">
+                <div style="width: ${{usagePct}}%; height: 100%; background: ${{barColor}}; transition: width 0.3s; border-radius: 4px;"></div>
+              </div>
+              <span class="text-sm font-medium" style="min-width: 70px;">${{Math.round(t.usage_current || 0)}} / ${{Math.round(t.usage_limit)}}</span>
+            </div>`;
+        }}
+        
+        // Days remaining with icon
+        let daysHtml = '<span style="color: var(--text-muted);">-</span>';
+        if (t.days_remaining !== null && t.days_remaining !== undefined) {{
+          let daysStyle, daysIcon;
+          if (t.days_remaining <= 3) {{
+            daysStyle = 'color: #f87171;';  // red-400
+            daysIcon = '⚠️';
+          }} else if (t.days_remaining <= 7) {{
+            daysStyle = 'color: #fbbf24;';  // amber-400
+            daysIcon = '⏰';
+          }} else {{
+            daysStyle = 'color: #4ade80;';  // green-400
+            daysIcon = '📅';
+          }}
+          daysHtml = `<span class="text-sm font-medium" style="${{daysStyle}}">${{daysIcon}} ${{t.days_remaining}}天</span>`;
+        }}
+        
+        // Email display - slightly larger
+        const emailHtml = t.email ? `<span class="text-xs" style="color: var(--text-muted); opacity: 0.8;">${{t.email}}</span>` : '';
+        
+        // Sync button - larger and more visible
+        const syncBtn = `<button onclick="syncTokenInfo(${{t.id}})" class="text-sm px-2 py-1 rounded bg-blue-500/30 text-blue-300 mr-1 font-medium" title="同步账户信息">🔄</button>`;
+        
         return `
           <tr class="table-row">
             <td class="py-3 px-3">
-              <input type="checkbox" class="token-checkbox" data-token-id="${{t.id}}" onchange="toggleTokenSelection(${{t.id}}, this.checked)" ${{selectedTokenIds.has(t.id) ? 'checked' : ''}} style="cursor: pointer;">
+              <input type="checkbox" class="token-checkbox" data-token-id="${{t.id}}" onchange="toggleTokenSelection(${{t.id}}, this.checked)" ${{selectedTokenIds.has(t.id) ? 'checked' : ''}} style="cursor: pointer; width: 16px; height: 16px;">
             </td>
-            <td class="py-3 px-3">#${{t.id}}</td>
-            <td class="py-3 px-3"><span class="${{t.visibility === 'public' ? 'text-green-400' : 'text-blue-400'}}">${{t.visibility === 'public' ? '公开' : '私有'}}</span></td>
-            <td class="py-3 px-3">${{renderTokenStatus(t.status)}}</td>
-            <td class="py-3 px-3">${{formatSuccessRate(t.success_rate)}}</td>
-            <td class="py-3 px-3">${{t.last_used ? new Date(t.last_used).toLocaleString() : '-'}}</td>
             <td class="py-3 px-3">
+              <div class="text-sm font-medium">#${{t.id}}</div>
+              ${{emailHtml}}
+            </td>
+            <td class="py-3 px-3">
+              <span class="text-sm font-medium ${{t.visibility === 'public' ? 'text-green-400' : 'text-blue-400'}}">${{t.visibility === 'public' ? '🌐 公开' : '🔒 私有'}}</span>
+            </td>
+            <td class="py-3 px-3"><span class="text-sm font-medium">${{renderTokenStatus(t.status)}}</span></td>
+            <td class="py-3 px-3">
+              ${{subBadge || '<span style="color: var(--text-muted);">-</span>'}}
+            </td>
+            <td class="py-3 px-3">${{usageHtml}}</td>
+            <td class="py-3 px-3">${{daysHtml}}</td>
+            <td class="py-3 px-3"><span class="text-sm font-medium">${{formatSuccessRate(t.success_rate)}}</span></td>
+            <td class="py-3 px-3">
+              ${{syncBtn}}
               ${{toggleBtn}}
-              <button onclick="deleteToken(${{t.id}})" class="text-xs px-2 py-1 rounded bg-red-500/20 text-red-400">删除</button>
+              <button onclick="deleteToken(${{t.id}})" class="text-sm px-2 py-1 rounded bg-red-500/30 text-red-300 font-medium">删除</button>
             </td>
           </tr>
         `;
@@ -4889,6 +4958,34 @@ def render_user_page(user) -> str:
 
       const allChecked = tokens.length > 0 && tokens.every(t => selectedTokenIds.has(t.id));
       document.getElementById('selectAllTokens').checked = allChecked;
+    }}
+    
+    async function syncTokenInfo(tokenId) {{
+      const btn = event.target;
+      const originalText = btn.textContent;
+      try {{
+        btn.disabled = true;
+        btn.textContent = '⏳';
+        
+        const r = await fetch(`/user/api/tokens/${{tokenId}}/sync`, {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }}
+        }});
+        const data = await r.json();
+        
+        if (data.success) {{
+          alert('✅ 同步成功！');
+          await loadTokens();
+        }} else {{
+          alert('❌ 同步失败: ' + (data.error || '未知错误'));
+          btn.textContent = originalText;
+          btn.disabled = false;
+        }}
+      }} catch (e) {{
+        alert('❌ 同步失败: ' + e.message);
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }}
     }}
 
     function renderTokensPagination(total, pageSize, totalPages) {{
@@ -5821,16 +5918,16 @@ def render_login_page() -> str:
           </a>
         '''
 
-    # 如果没有配置任何登录方式，显示提示
+    # 如果没有配置任何登录方式，显示配置提示
     if not login_buttons:
         login_buttons = '''
-          <div class="p-6 rounded-lg text-center" style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);">
-            <div class="text-3xl mb-3">⚠️</div>
-            <p class="font-medium mb-2" style="color: #d97706;">OAuth2 登录未配置</p>
-            <p class="text-sm" style="color: var(--text-muted);">请在 .env 文件中配置 LinuxDo 或 GitHub OAuth2 凭证</p>
-            <div class="mt-4 text-xs" style="color: var(--text-muted);">
-              参考文档：<a href="/docs" class="text-indigo-400 hover:underline">配置指南</a>
-            </div>
+          <div class="p-6 rounded-lg" style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35);">
+            <div class="text-3xl mb-3 text-center">⚠️</div>
+            <p class="font-medium mb-2 text-center" style="color: #f87171;">未配置登录方式</p>
+            <p class="text-sm text-center" style="color: var(--text-muted);">
+              请在 .env 文件中配置 GitHub OAuth2：<br>
+              <code>GITHUB_CLIENT_ID</code> 和 <code>GITHUB_CLIENT_SECRET</code>
+            </p>
           </div>
         '''
 
