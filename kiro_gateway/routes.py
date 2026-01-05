@@ -2106,7 +2106,6 @@ async def login_page(request: Request):
     return HTMLResponse(content=render_login_page())
 
 
-
 @router.get("/oauth2/github/login", include_in_schema=False)
 async def github_oauth2_login(request: Request):
     """Redirect to GitHub OAuth2 authorization."""
@@ -2326,11 +2325,130 @@ async def user_get_tokens(
                 "success_rate": round(t.success_rate * 100, 1),
                 "last_used": t.last_used,
                 "created_at": t.created_at,
+                # Account info fields
+                "email": t.email,
+                "idp": t.idp,
+                "subscription_type": t.subscription_type,
+                "subscription_title": t.subscription_title,
+                "usage_current": t.usage_current,
+                "usage_limit": t.usage_limit,
+                "usage_percent": round(t.usage_percent, 1),
+                "base_current": t.base_current,
+                "base_limit": t.base_limit,
+                "trial_current": t.trial_current,
+                "trial_limit": t.trial_limit,
+                "trial_expiry": t.trial_expiry,
+                "next_reset": t.next_reset,
+                "days_remaining": t.days_remaining,
+                "info_updated_at": t.info_updated_at,
             }
             for t in tokens
         ],
         "pagination": {"page": page, "page_size": page_size, "total": total}
     }
+
+
+@router.post("/user/api/tokens/{token_id}/sync", include_in_schema=False)
+async def user_sync_token_info(
+    request: Request,
+    token_id: int,
+    _csrf: None = Depends(require_same_origin)
+):
+    """Sync token account info from Kiro API."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+    
+    from kiro_gateway.database import user_db
+    from kiro_gateway.auth import KiroAuthManager
+    from kiro_gateway.kiro_api import fetch_token_info
+    from loguru import logger
+    
+    # Verify user owns this token
+    token = user_db.get_token_by_id(token_id)
+    if not token or token.user_id != user.id:
+        return JSONResponse(status_code=404, content={"error": "Token 不存在"})
+    
+    try:
+        # 1. Get token credentials
+        credentials = user_db.get_token_credentials(token_id)
+        if not credentials or not credentials.get('refresh_token'):
+            return JSONResponse(status_code=400, content={"error": "Token 凭证无效"})
+        
+        refresh_token = credentials['refresh_token']
+        client_id = credentials.get('client_id')
+        client_secret = credentials.get('client_secret')
+        
+        # 2. Create AuthManager and get access_token
+        auth_manager = KiroAuthManager(
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+        
+        access_token = await auth_manager.get_access_token()
+        if not access_token:
+            return JSONResponse(status_code=500, content={"error": "获取 access token 失败"})
+        
+        # 3. Call Kiro API to get account info
+        idp = "BuilderId"
+        if client_id and "github" in client_id.lower():
+            idp = "GitHub"
+        elif client_id and "google" in client_id.lower():
+            idp = "Google"
+        
+        info = await fetch_token_info(access_token, idp)
+        if not info:
+            return JSONResponse(status_code=500, content={"error": "获取账户信息失败"})
+        
+        # 4. Update database
+        user_db.update_token_info(
+            token_id=token_id,
+            email=info.get("email"),
+            idp=info.get("idp", idp),
+            subscription_type=info.get("subscription_type"),
+            subscription_title=info.get("subscription_title"),
+            usage_current=info.get("usage_current"),
+            usage_limit=info.get("usage_limit"),
+            base_current=info.get("base_current"),
+            base_limit=info.get("base_limit"),
+            trial_current=info.get("trial_current"),
+            trial_limit=info.get("trial_limit"),
+            trial_expiry=info.get("trial_expiry"),
+            next_reset=info.get("next_reset"),
+            days_remaining=info.get("days_remaining")
+        )
+        
+        logger.info(f"[TokenSync] Token {token_id}: Synced successfully - {info.get('email', 'unknown')}")
+        
+        # Return updated token info
+        updated_token = user_db.get_token_by_id(token_id)
+        return {
+            "success": True,
+            "token": {
+                "id": updated_token.id,
+                "email": updated_token.email,
+                "idp": updated_token.idp,
+                "subscription_type": updated_token.subscription_type,
+                "subscription_title": updated_token.subscription_title,
+                "usage_current": updated_token.usage_current,
+                "usage_limit": updated_token.usage_limit,
+                "usage_percent": round(updated_token.usage_percent, 1),
+                "base_current": updated_token.base_current,
+                "base_limit": updated_token.base_limit,
+                "trial_current": updated_token.trial_current,
+                "trial_limit": updated_token.trial_limit,
+                "trial_expiry": updated_token.trial_expiry,
+                "next_reset": updated_token.next_reset,
+                "days_remaining": updated_token.days_remaining,
+                "info_updated_at": updated_token.info_updated_at,
+            }
+        }
+    except Exception as e:
+        logger.error(f"[TokenSync] Token {token_id}: Sync failed - {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": f"同步失败: {str(e)}"})
 
 
 @router.get("/user/api/public-tokens", include_in_schema=False)
@@ -2400,6 +2518,8 @@ def _extract_refresh_tokens(payload: object) -> tuple[list[dict], int, list[str]
             if client_secret:
                 cred["clientSecret"] = client_secret
             credentials.append(cred)
+            # Debug logging
+            logger.info(f"Added credential from {path}: clientId={'Yes' if client_id else 'No'}, clientSecret={'Yes' if client_secret else 'No'}")
             return
         record_missing(path, "refreshToken 为空或无效")
 
@@ -2593,18 +2713,28 @@ async def _process_import_payload(
         """Validate credential and return (cred_dict, success, error_message)."""
         async with semaphore:
             try:
+                # Debug logging for credential extraction
+                refresh_token = cred.get("refreshToken")
+                client_id = cred.get("clientId")
+                client_secret = cred.get("clientSecret")
+                logger.info(f"Validating token: refreshToken={'Yes' if refresh_token else 'No'}, "
+                           f"clientId={'Yes' if client_id else 'No'}, "
+                           f"clientSecret={'Yes' if client_secret else 'No'}")
+                
                 temp_manager = KiroAuthManager(
-                    refresh_token=cred.get("refreshToken"),
-                    client_id=cred.get("clientId"),
-                    client_secret=cred.get("clientSecret"),
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
                     region=settings.region,
                     profile_arn=settings.profile_arn
                 )
                 access_token = await temp_manager.get_access_token()
                 if not access_token:
                     return cred, False, "无法获取访问令牌"
+                logger.info(f"Token validation successful, got access token")
                 return cred, True, None
             except Exception as exc:
+                logger.error(f"Token validation failed: {exc}")
                 return cred, False, str(exc)
 
     validation_results = await asyncio.gather(
@@ -2625,13 +2755,17 @@ async def _process_import_payload(
             continue
 
         # Save token with client_id and client_secret for AWS SSO OIDC tokens
+        client_id = cred.get("clientId")
+        client_secret = cred.get("clientSecret")
+        logger.info(f"Saving token to DB: clientId={'Yes' if client_id else 'No'}, clientSecret={'Yes' if client_secret else 'No'}")
         success, message = user_db.donate_token(
             user_id, token, visibility, anonymous,
-            client_id=cred.get("clientId"),
-            client_secret=cred.get("clientSecret")
+            client_id=client_id,
+            client_secret=client_secret
         )
         if success:
             imported += 1
+            logger.info(f"Token saved successfully")
         else:
             if message == "Token 已存在":
                 skipped += 1
